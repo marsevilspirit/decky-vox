@@ -1,38 +1,63 @@
 {
-  "name": "decky-plugin-template",
-  "version": "0.0.1",
-  "description": "A template to quickly create decky plugins from scratch, based on TypeScript and webpack",
+  "name": "decky-vox",
+  "version": "0.1.0",
+  "description": "Offline push-to-talk voice typing for Steam Deck with native text input and optional auto-send.",
   "type": "module",
+  "packageManager": "pnpm@9.15.9",
   "scripts": {
     "build": "rollup -c",
     "watch": "rollup -c -w",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "typecheck": "tsc --noEmit",
+    "test": "pnpm run test:ts && pnpm run test:python && pnpm run test:rust",
+    "test:ts": "tsx --test tests/ts/*.test.ts",
+    "test:python": "python3 -m unittest discover -s tests/python -p 'test_*.py'",
+    "test:rust": "cd backend && cargo test --all-targets --locked"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/SteamDeckHomebrew/decky-plugin-template.git"
+    "url": "git+https://github.com/marsevilspirit/decky-vox.git"
   },
   "keywords": [
     "decky",
     "plugin",
-    "plugin-template",
+    "decky-loader",
     "steam-deck",
-    "deck"
+    "voice-typing",
+    "offline-speech-recognition",
+    "whisper"
   ],
-  "author": "You <you@you.tld>",
+  "author": "marsevilspirit",
   "license": "BSD-3-Clause",
   "bugs": {
-    "url": "https://github.com/SteamDeckHomebrew/decky-plugin-template/issues"
+    "url": "https://github.com/marsevilspirit/decky-vox/issues"
   },
-  "homepage": "https://github.com/SteamDeckHomebrew/decky-plugin-template#readme",
+  "homepage": "https://github.com/marsevilspirit/decky-vox#readme",
+  "engines": {
+    "node": ">=18"
+  },
+  "remote_binary_bundling": true,
+  "remote_binary": [
+    {
+      "name": "voxtype",
+      "url": "https://github.com/peteonrails/voxtype/releases/download/v0.6.5/voxtype-0.6.5-linux-x86_64-avx2",
+      "sha256hash": "dbc41315b92b2cec838a80b0afd1bbee6b920acb17be051c48383d93678ff824"
+    },
+    {
+      "name": "voxtype-vulkan",
+      "url": "https://github.com/peteonrails/voxtype/releases/download/v0.6.5/voxtype-0.6.5-linux-x86_64-vulkan",
+      "sha256hash": "bedc2905e2924758fdea1acf458a9e8e1936878c6e3fc26a540f4464fec8a1a6"
+    }
+  ],
   "devDependencies": {
     "@decky/rollup": "^1.0.2",
     "@decky/ui": "^4.11.0",
     "@rollup/rollup-linux-x64-musl": "^4.53.3",
     "@types/react": "19.1.1",
     "@types/react-dom": "19.1.1",
+    "@types/react-router": "5.1.20",
     "@types/webpack": "^5.28.5",
     "rollup": "^4.53.3",
+    "tsx": "4.23.12",
     "typescript": "^5.6.2"
   },
   "dependencies": {

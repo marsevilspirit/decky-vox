@@ -1,11 +1,11 @@
 {
-  "name": "Example Plugin",
-  "author": "John Doe",
-  "flags": ["debug", "_root"],
+  "name": "Decky Vox",
+  "author": "marsevilspirit",
+  "flags": [],
   "api_version": 1,
   "publish": {
-    "tags": ["template", "root"],
-    "description": "Decky example plugin.",
-    "image": "https://opengraph.githubassets.com/1/SteamDeckHomebrew/PluginLoader"
+    "tags": ["voice", "dictation", "speech-to-text", "whisper", "accessibility", "microphone"],
+    "description": "Offline push-to-talk voice typing for Steam Deck with native text input and optional auto-send.",
+    "image": "https://raw.githubusercontent.com/marsevilspirit/decky-vox/main/assets/logo.png"
   }
 }

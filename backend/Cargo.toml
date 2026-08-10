@@ -1,0 +1,29 @@
+[package]
+name = "decky-vox-core"
+version = "0.1.0"
+edition = "2021"
+license = "BSD-3-Clause"
+description = "Local offline speech core for the Decky Vox Steam Deck plugin"
+publish = false
+
+[lib]
+name = "decky_vox_core"
+path = "src/lib.rs"
+
+[[bin]]
+name = "decky-vox-core"
+path = "src/main.rs"
+
+[dependencies]
+fs2 = "0.4.3"
+libc = "0.2.172"
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
+sha2 = "0.10.9"
+thiserror = "2.0.12"
+ureq = { version = "2.12.1", default-features = false, features = ["tls"] }
+uuid = { version = "1.16.0", features = ["v4"] }
+wait-timeout = "0.2.1"
+
+[dev-dependencies]
+tempfile = "3.20.0"

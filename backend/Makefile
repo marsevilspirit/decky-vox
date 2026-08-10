@@ -1,14 +1,12 @@
-# This is the default target, which will be built when 
-# you invoke make
-.PHONY: all
-all: hello
+.PHONY: all test clean
 
-# This rule tells make how to build hello from hello.cpp
-hello:
-	mkdir -p ./out
-	gcc -o ./out/hello ./src/main.c 
+all:
+	cargo build --release --locked --target x86_64-unknown-linux-gnu
+	install -Dm755 target/x86_64-unknown-linux-gnu/release/decky-vox-core out/decky-vox-core
 
-# This rule tells make to delete hello and hello.o
-.PHONY: clean 
+test:
+	cargo test --all-targets --locked --target x86_64-unknown-linux-gnu
+
 clean:
-	rm -f hello
+	cargo clean
+	rm -f out/decky-vox-core
