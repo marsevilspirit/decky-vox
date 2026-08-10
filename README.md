@@ -86,6 +86,9 @@ Ready 同时要求 Rust 后端已准备且前端能够注册控制器输入。�
 Input completed、Sent、Copied to clipboard、No speech recognized 或 Failed，不能将
 这些结果理解为 Steam 已确认送达。
 
+Decky Vox 不创建 Steam 系统通知；录音、转写和输出状态只显示在插件面板中，避免挤占
+通知中心。底层 voxtype 的录音、停止和转写通知也全部关闭。
+
 ## 故障排查
 
 ### 一直显示 Setup required

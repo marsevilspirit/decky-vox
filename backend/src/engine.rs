@@ -172,14 +172,20 @@ impl VoxtypeEngine {
     }
 
     fn prepare_binary(path: &Path) -> Result<(), EngineError> {
-        if !path.is_file() {
+        let metadata =
+            fs::metadata(path).map_err(|_| EngineError::BinaryMissing(path.to_path_buf()))?;
+        if !metadata.is_file() {
             return Err(EngineError::BinaryMissing(path.to_path_buf()));
         }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(path, fs::Permissions::from_mode(0o755))
-                .map_err(EngineError::Config)?;
+            if metadata.permissions().mode() & 0o111 == 0 {
+                return Err(EngineError::Start(format!(
+                    "voxtype binary is not executable: {}",
+                    path.display()
+                )));
+            }
         }
         Ok(())
     }
@@ -844,6 +850,44 @@ mod tests {
         assert_eq!(
             status_argv(),
             ["--quiet", "status", "--follow", "--format", "json"]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn packaged_binary_permissions_are_validated_without_being_modified() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let binary = directory.path().join("voxtype");
+        fs::write(&binary, b"binary").unwrap();
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o555)).unwrap();
+
+        VoxtypeEngine::prepare_binary(&binary).unwrap();
+
+        assert_eq!(
+            fs::metadata(&binary).unwrap().permissions().mode() & 0o777,
+            0o555
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_executable_packaged_binary_is_rejected_without_chmod() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let binary = directory.path().join("voxtype");
+        fs::write(&binary, b"binary").unwrap();
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let error = VoxtypeEngine::prepare_binary(&binary).unwrap_err();
+
+        assert_eq!(error.code(), "ENGINE_START_FAILED");
+        assert!(error.to_string().contains("not executable"));
+        assert_eq!(
+            fs::metadata(&binary).unwrap().permissions().mode() & 0o777,
+            0o644
         );
     }
 
