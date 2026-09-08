@@ -9,6 +9,7 @@ pub const MIN_SEND_DELAY_MS: u64 = 100;
 pub const MAX_SEND_DELAY_MS: u64 = 5000;
 
 const MODELS: &[&str] = &["tiny", "base", "small", "medium"];
+const LANGUAGES: &[&str] = &["auto", "zh"];
 const PTT_MODES: &[&str] = &["hold", "toggle"];
 const OUTPUT_MODES: &[&str] = &["steam_input", "steam_input_send", "clipboard"];
 // v1 exposes only the four back-grip buttons whose Steam event mappings were
@@ -54,6 +55,7 @@ impl Settings {
         };
 
         let model = allowed_string(object, "model", MODELS).unwrap_or(defaults.model);
+        let language = allowed_string(object, "language", LANGUAGES).unwrap_or(defaults.language);
         let ptt_mode = allowed_string(object, "ptt_mode", PTT_MODES).unwrap_or(defaults.ptt_mode);
         let controller_primary = allowed_string(object, "controller_primary", CONTROLLER_BUTTONS)
             .unwrap_or(defaults.controller_primary);
@@ -79,8 +81,7 @@ impl Settings {
         Self {
             schema_version: SETTINGS_SCHEMA_VERSION,
             model,
-            // v1 deliberately exposes no remote/language-specific backend.
-            language: "auto".to_string(),
+            language,
             gpu_enabled: strict_bool(object, "gpu_enabled").unwrap_or(defaults.gpu_enabled),
             ptt_mode,
             controller_primary,
@@ -98,11 +99,7 @@ impl Settings {
             .expect("Settings serializes as an object")
             .clone();
         if let Some(patch) = patch.as_object() {
-            for (key, value) in patch {
-                if is_known_key(key) {
-                    merged.insert(key.clone(), value.clone());
-                }
-            }
+            merged.extend(patch.clone());
         }
         Self::normalize(&Value::Object(merged))
     }
@@ -115,22 +112,6 @@ fn strict_bool(object: &Map<String, Value>, key: &str) -> Option<bool> {
 fn allowed_string(object: &Map<String, Value>, key: &str, allowed: &[&str]) -> Option<String> {
     let value = object.get(key)?.as_str()?;
     allowed.contains(&value).then(|| value.to_string())
-}
-
-fn is_known_key(key: &str) -> bool {
-    matches!(
-        key,
-        "schema_version"
-            | "model"
-            | "language"
-            | "gpu_enabled"
-            | "ptt_mode"
-            | "controller_primary"
-            | "controller_secondary"
-            | "output_mode"
-            | "send_delay_ms"
-            | "auto_start"
-    )
 }
 
 #[derive(Debug, Clone)]
@@ -227,7 +208,7 @@ mod tests {
         let settings = Settings::normalize(&json!({
             "schema_version": 999,
             "model": "small.en",
-            "language": "zh",
+            "language": "zh-CN",
             "gpu_enabled": "yes",
             "ptt_mode": "press",
             "controller_primary": "R4",
@@ -253,6 +234,28 @@ mod tests {
     }
 
     #[test]
+    fn language_accepts_only_auto_or_zh() {
+        assert_eq!(
+            Settings::normalize(&json!({"language": "auto"})).language,
+            "auto"
+        );
+        assert_eq!(
+            Settings::normalize(&json!({"language": "zh"})).language,
+            "zh"
+        );
+        assert_eq!(
+            Settings::default()
+                .apply_patch(&json!({"language": "zh"}))
+                .language,
+            "zh"
+        );
+        assert_eq!(
+            Settings::normalize(&json!({"language": "en"})).language,
+            "auto"
+        );
+    }
+
+    #[test]
     fn delay_is_clamped_at_both_bounds() {
         assert_eq!(
             Settings::normalize(&json!({"send_delay_ms": 99})).send_delay_ms,
@@ -267,9 +270,18 @@ mod tests {
     #[test]
     fn patch_preserves_omitted_fields_and_normalizes_invalid_output_safely() {
         let current = Settings::default().apply_patch(&json!({"model": "base"}));
-        let updated = current.apply_patch(&json!({"output_mode": "invalid"}));
+        let updated = current.apply_patch(&json!({
+            "output_mode": "invalid",
+            "schema_version": 999,
+            "unknown": "discard me"
+        }));
         assert_eq!(updated.model, "base");
         assert_eq!(updated.output_mode, "steam_input");
+        assert_eq!(updated.schema_version, SETTINGS_SCHEMA_VERSION);
+        assert!(serde_json::to_value(updated)
+            .unwrap()
+            .get("unknown")
+            .is_none());
     }
 
     #[test]

@@ -23,38 +23,6 @@ const RECORDING_READY_TIMEOUT: Duration = Duration::from_secs(5);
 const READY_TIMEOUT: Duration = Duration::from_secs(30);
 const STOP_TIMEOUT: Duration = Duration::from_secs(3);
 
-const VOXTYPE_ENV_OVERRIDES: &[&str] = &[
-    "VOXTYPE_HOTKEY",
-    "VOXTYPE_HOTKEY_ENABLED",
-    "VOXTYPE_CANCEL_KEY",
-    "VOXTYPE_MODEL",
-    "VOXTYPE_ENGINE",
-    "VOXTYPE_LANGUAGE",
-    "VOXTYPE_TRANSLATE",
-    "VOXTYPE_THREADS",
-    "VOXTYPE_GPU_ISOLATION",
-    "VOXTYPE_GPU_DEVICE",
-    "VOXTYPE_ON_DEMAND_LOADING",
-    "VOXTYPE_REMOTE_ENDPOINT",
-    "VOXTYPE_WHISPER_API_KEY",
-    "VOXTYPE_AUDIO_DEVICE",
-    "VOXTYPE_MAX_DURATION_SECS",
-    "VOXTYPE_AUDIO_FEEDBACK",
-    "VOXTYPE_OUTPUT_MODE",
-    "VOXTYPE_APPEND_TEXT",
-    "VOXTYPE_AUTO_SUBMIT",
-    "VOXTYPE_SMART_AUTO_SUBMIT",
-    "VOXTYPE_SHIFT_ENTER_NEWLINES",
-    "VOXTYPE_PRE_TYPE_DELAY",
-    "VOXTYPE_TYPE_DELAY",
-    "VOXTYPE_FALLBACK_TO_CLIPBOARD",
-    "VOXTYPE_PASTE_KEYS",
-    "VOXTYPE_DOTOOL_XKB_LAYOUT",
-    "VOXTYPE_SPOKEN_PUNCTUATION",
-    "VOXTYPE_RESTORE_CLIPBOARD",
-    "VOXTYPE_RESTORE_CLIPBOARD_DELAY_MS",
-];
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EngineEvent {
     Transcription {
@@ -97,7 +65,7 @@ impl EngineError {
 pub trait Engine: Send {
     fn enable(&mut self, settings: &Settings) -> Result<String, EngineError>;
     fn disable(&mut self);
-    fn start_recording(&mut self, session_id: u64, settings: &Settings) -> Result<(), EngineError>;
+    fn start_recording(&mut self, session_id: u64) -> Result<(), EngineError>;
     fn stop_recording(&mut self, session_id: u64) -> Result<(), EngineError>;
     fn cancel_recording(&mut self, session_id: u64, settings: &Settings)
         -> Result<(), EngineError>;
@@ -220,22 +188,6 @@ impl VoxtypeEngine {
             fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))
                 .map_err(EngineError::Config)?;
         }
-        let owner_path = directory.join("core.pid");
-        let mut owner = OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .open(&owner_path)
-            .map_err(EngineError::Config)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            owner
-                .set_permissions(fs::Permissions::from_mode(0o600))
-                .map_err(EngineError::Config)?;
-        }
-        writeln!(owner, "{}", std::process::id()).map_err(EngineError::Config)?;
-        owner.sync_all().map_err(EngineError::Config)?;
         remove_result_files(&directory)?;
         Ok(())
     }
@@ -310,14 +262,10 @@ impl VoxtypeEngine {
             "PULSE_RUNTIME_PATH",
             self.paths.audio_runtime_dir.join("pulse"),
         );
-        // voxtype applies VOXTYPE_* after its config file. Strip both the
-        // audited keys and any future prefixed key inherited from Decky so the
-        // process cannot be switched to remote ASR, clipboard/type output or
-        // auto-submit behind this adapter's file-only contract.
+        // voxtype applies VOXTYPE_* after its config file. Strip all inherited
+        // prefixed keys so they cannot enable remote ASR, clipboard/type output,
+        // or auto-submit behind this adapter's file-only contract.
         command.env_remove("RUST_LOG");
-        for key in VOXTYPE_ENV_OVERRIDES {
-            command.env_remove(key);
-        }
         for (key, _) in std::env::vars_os() {
             if key.to_string_lossy().starts_with("VOXTYPE_") {
                 command.env_remove(key);
@@ -622,11 +570,7 @@ impl Engine for VoxtypeEngine {
         self.active_backend = None;
     }
 
-    fn start_recording(
-        &mut self,
-        session_id: u64,
-        _settings: &Settings,
-    ) -> Result<(), EngineError> {
+    fn start_recording(&mut self, session_id: u64) -> Result<(), EngineError> {
         if self.active_binary.is_none() {
             return Err(EngineError::Start("engine is not enabled".to_string()));
         }
@@ -756,10 +700,11 @@ fn render_config(settings: &Settings, output_path: &Path) -> String {
          [hotkey]\nenabled = false\nkey = \"SCROLLLOCK\"\n\n\
          [audio]\ndevice = \"default\"\nsample_rate = 16000\nmax_duration_secs = 60\n\n\
          [audio.feedback]\nenabled = false\n\n\
-         [whisper]\nbackend = \"local\"\nmodel = \"{}\"\nlanguage = \"auto\"\ntranslate = false\n\n\
+         [whisper]\nbackend = \"local\"\nmodel = \"{}\"\nlanguage = \"{}\"\ntranslate = false\n\n\
          [output]\nmode = \"file\"\nfile_path = \"{}\"\nfile_mode = \"overwrite\"\nfallback_to_clipboard = false\nauto_submit = false\n\n\
          [output.notification]\non_recording_start = false\non_recording_stop = false\non_transcription = false\n",
         toml_escape(&settings.model),
+        toml_escape(&settings.language),
         toml_escape(&output_path.to_string_lossy()),
     )
 }
@@ -909,11 +854,43 @@ mod tests {
     }
 
     #[test]
+    fn config_uses_selected_language() {
+        let settings = Settings {
+            language: "zh".to_string(),
+            ..Settings::default()
+        };
+        let config = render_config(&settings, Path::new("/tmp/result.txt"));
+        assert!(config.contains("language = \"zh\""));
+        assert!(!config.contains("language = \"auto\""));
+    }
+
+    #[test]
     fn audio_sockets_use_host_runtime_while_voxtype_state_stays_isolated() {
+        const CHILD_FLAG: &str = "DECKY_VOX_ENV_TEST_CHILD";
+        if std::env::var_os(CHILD_FLAG).is_none() {
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "engine::tests::audio_sockets_use_host_runtime_while_voxtype_state_stays_isolated",
+                ])
+                .env(CHILD_FLAG, "1")
+                .env("VOXTYPE_AUTO_SUBMIT", "true")
+                .env("VOXTYPE_REMOTE_ENDPOINT", "https://invalid.example")
+                .env("VOXTYPE_FUTURE_OPTION", "enabled")
+                .env("RUST_LOG", "trace")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+            return;
+        }
         let directory = tempfile::tempdir().unwrap();
         let (events, _receiver) = mpsc::channel();
         let engine = VoxtypeEngine::new(paths(directory.path()), events).unwrap();
-        let mut command = Command::new("/bin/true");
+        let mut command = Command::new("/usr/bin/env");
         engine.configure_environment(&mut command);
         let environment = command
             .get_envs()
@@ -942,12 +919,11 @@ mod tests {
         assert!(command
             .get_envs()
             .any(|(key, value)| key == "RUST_LOG" && value.is_none()));
-        assert!(command
-            .get_envs()
-            .any(|(key, value)| key == "VOXTYPE_AUTO_SUBMIT" && value.is_none()));
-        assert!(command
-            .get_envs()
-            .any(|(key, value)| key == "VOXTYPE_REMOTE_ENDPOINT" && value.is_none()));
+        let output = command.output().unwrap();
+        assert!(output.status.success());
+        assert!(!String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .any(|line| line.starts_with("VOXTYPE_") || line.starts_with("RUST_LOG=")));
     }
 
     #[test]

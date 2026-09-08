@@ -14,7 +14,7 @@ test("settings normalization rejects unsafe or mistyped values", () => {
   const settings = normalizeSettings({
     schema_version: 99,
     model: "small.en",
-    language: "zh",
+    language: "english",
     gpu_enabled: 1,
     ptt_mode: "anything",
     controller_primary: "invalid",
@@ -27,6 +27,12 @@ test("settings normalization rejects unsafe or mistyped values", () => {
 
   assert.deepEqual(settings, DEFAULT_SETTINGS);
   assert.equal("unknown" in settings, false);
+});
+
+test("settings normalization accepts supported languages and rejects unknown values", () => {
+  assert.equal(normalizeSettings({ language: "auto" }).language, "auto");
+  assert.equal(normalizeSettings({ language: "zh" }).language, "zh");
+  assert.equal(normalizeSettings({ language: "en" }).language, "auto");
 });
 
 test("settings normalization clamps integer send delay and removes duplicate chord", () => {

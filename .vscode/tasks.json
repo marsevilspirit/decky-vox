@@ -54,11 +54,7 @@
             "label": "cli-build",
             "group": "build",
             "detail": "Build plugin with CLI",
-            "command": "${workspaceFolder}/.vscode/build.sh",
-            // // placeholder for windows logic, not currently planned
-            // "windows": {
-            //     "command": "call ${workspaceFolder}\\.vscode\\build.bat",
-            // },
+            "command": "${workspaceFolder}/scripts/package.sh",
             "problemMatcher": []
         }, 
         //"All-in-one" build task

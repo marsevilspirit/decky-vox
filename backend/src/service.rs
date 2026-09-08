@@ -416,16 +416,11 @@ impl<E: Engine> Service<E> {
         }
         self.error = None;
 
-        if (old.model != self.settings.model || old.gpu_enabled != self.settings.gpu_enabled)
-            && self.session.is_none()
-        {
+        if engine_settings_changed(&old, &self.settings) && self.session.is_none() {
             self.restart_backend();
         }
 
         let mut result = CommandResult::value(to_value(self.snapshot())?);
-        result
-            .events
-            .push(self.event("settings", to_value(self.settings.clone())?));
         result.events.push(self.snapshot_event());
         Ok(result)
     }
@@ -473,8 +468,7 @@ impl<E: Engine> Service<E> {
         if !self.enabled || self.phase != BackendPhase::Ready {
             return Err(CoreError::new("NOT_READY", "backend is not ready"));
         }
-        let frozen_settings = self.settings.clone();
-        if let Err(error) = self.engine.start_recording(session_id, &frozen_settings) {
+        if let Err(error) = self.engine.start_recording(session_id) {
             self.phase = BackendPhase::Failed;
             self.engine_backend = None;
             self.error = Some(ErrorBody::new(error.code(), error.to_string()));
@@ -646,8 +640,7 @@ impl<E: Engine> Service<E> {
             self.phase = BackendPhase::Stopped;
             return;
         }
-        let engine_changed = self.engine_settings.model != self.settings.model
-            || self.engine_settings.gpu_enabled != self.settings.gpu_enabled;
+        let engine_changed = engine_settings_changed(&self.engine_settings, &self.settings);
         if self.engine_settings.model != self.settings.model {
             self.refresh_model_installed();
         }
@@ -658,7 +651,7 @@ impl<E: Engine> Service<E> {
             return;
         }
         if engine_changed {
-            // The active daemon still owns the old frozen model/GPU settings.
+            // The active daemon still owns the old frozen model/GPU/language settings.
             // Stop it outright, then start a daemon for the newly persisted
             // settings instead of asking the old binary to restart itself.
             self.restart_backend();
@@ -683,8 +676,7 @@ impl<E: Engine> Service<E> {
             self.phase = BackendPhase::Stopped;
             return;
         }
-        let engine_changed = self.engine_settings.model != self.settings.model
-            || self.engine_settings.gpu_enabled != self.settings.gpu_enabled;
+        let engine_changed = engine_settings_changed(&self.engine_settings, &self.settings);
         if self.engine_settings.model != self.settings.model {
             self.refresh_model_installed();
         }
@@ -738,6 +730,12 @@ fn required_session_id(params: &Value) -> Result<u64, CoreError> {
         .ok_or_else(|| CoreError::new("INVALID_REQUEST", "session_id must be an unsigned integer"))
 }
 
+fn engine_settings_changed(old: &Settings, updated: &Settings) -> bool {
+    old.model != updated.model
+        || old.language != updated.language
+        || old.gpu_enabled != updated.gpu_enabled
+}
+
 fn to_value<T: Serialize>(value: T) -> Result<Value, CoreError> {
     serde_json::to_value(value).map_err(|error| CoreError::new("INTERNAL_ERROR", error.to_string()))
 }
@@ -753,7 +751,7 @@ mod tests {
     struct FakeState {
         enabled: usize,
         disabled: usize,
-        enabled_settings: Vec<(String, bool)>,
+        enabled_settings: Vec<(String, String, bool)>,
         starts: Vec<u64>,
         stops: Vec<u64>,
         cancels: Vec<u64>,
@@ -765,9 +763,11 @@ mod tests {
         fn enable(&mut self, settings: &Settings) -> Result<String, EngineError> {
             let mut state = self.0.lock().unwrap();
             state.enabled += 1;
-            state
-                .enabled_settings
-                .push((settings.model.clone(), settings.gpu_enabled));
+            state.enabled_settings.push((
+                settings.model.clone(),
+                settings.language.clone(),
+                settings.gpu_enabled,
+            ));
             Ok("fake".to_string())
         }
 
@@ -775,11 +775,7 @@ mod tests {
             self.0.lock().unwrap().disabled += 1;
         }
 
-        fn start_recording(
-            &mut self,
-            session_id: u64,
-            _settings: &Settings,
-        ) -> Result<(), EngineError> {
+        fn start_recording(&mut self, session_id: u64) -> Result<(), EngineError> {
             self.0.lock().unwrap().starts.push(session_id);
             Ok(())
         }
@@ -988,7 +984,7 @@ mod tests {
         assert!(state.disabled > disables_before);
         assert_eq!(
             state.enabled_settings.last(),
-            Some(&("base".to_string(), true))
+            Some(&("base".to_string(), "auto".to_string(), true))
         );
     }
 
@@ -1017,7 +1013,87 @@ mod tests {
         assert!(state.cancels.is_empty());
         assert_eq!(
             state.enabled_settings.last(),
-            Some(&("small".to_string(), false))
+            Some(&("small".to_string(), "auto".to_string(), false))
+        );
+    }
+
+    #[test]
+    fn language_change_without_active_session_restarts_immediately() {
+        let (mut service, state, _directory) = service();
+        let disables_before = state.lock().unwrap().disabled;
+
+        let result = service
+            .handle("update_settings", json!({"settings": {"language": "zh"}}))
+            .unwrap();
+
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].name, "snapshot");
+        assert_eq!(result.events[0].payload["settings"]["language"], "zh");
+        assert_eq!(service.snapshot().phase, BackendPhase::Ready);
+        assert_eq!(service.snapshot().settings.language, "zh");
+        let state = state.lock().unwrap();
+        assert!(state.disabled > disables_before);
+        assert_eq!(
+            state.enabled_settings.last(),
+            Some(&("small".to_string(), "zh".to_string(), true))
+        );
+    }
+
+    #[test]
+    fn language_change_during_session_is_deferred_until_transcription_finishes() {
+        let (mut service, state, _directory) = service();
+        service
+            .handle("record_start", json!({"session_id": 33}))
+            .unwrap();
+        let disables_before = state.lock().unwrap().disabled;
+        service
+            .handle("update_settings", json!({"settings": {"language": "zh"}}))
+            .unwrap();
+        assert_eq!(service.snapshot().phase, BackendPhase::Recording);
+        assert_eq!(state.lock().unwrap().disabled, disables_before);
+
+        service
+            .handle("record_stop", json!({"session_id": 33}))
+            .unwrap();
+        let events = service.handle_engine_event(EngineEvent::Transcription {
+            session_id: 33,
+            text: "完成".to_string(),
+            stop_requested: true,
+        });
+
+        assert!(events.iter().any(|event| event.name == "output"));
+        assert_eq!(service.snapshot().phase, BackendPhase::Ready);
+        let state = state.lock().unwrap();
+        assert!(state.disabled > disables_before);
+        assert_eq!(
+            state.enabled_settings.last(),
+            Some(&("small".to_string(), "zh".to_string(), true))
+        );
+    }
+
+    #[test]
+    fn cancelling_after_language_change_restarts_with_new_settings() {
+        let (mut service, state, _directory) = service();
+        service
+            .handle("record_start", json!({"session_id": 34}))
+            .unwrap();
+        let disables_before = state.lock().unwrap().disabled;
+        service
+            .handle("update_settings", json!({"settings": {"language": "zh"}}))
+            .unwrap();
+        assert_eq!(service.snapshot().phase, BackendPhase::Recording);
+
+        service
+            .handle("cancel_session", json!({"session_id": 34}))
+            .unwrap();
+
+        assert_eq!(service.snapshot().phase, BackendPhase::Ready);
+        let state = state.lock().unwrap();
+        assert!(state.disabled > disables_before);
+        assert!(state.cancels.is_empty());
+        assert_eq!(
+            state.enabled_settings.last(),
+            Some(&("small".to_string(), "zh".to_string(), true))
         );
     }
 

@@ -91,7 +91,6 @@ src/
   runtime/deckyVoxRuntime.ts       # 会话串行化与事件协调
   runtime/outputCoordinator.ts    # 注入、回退、Return 安全释放
   ui/DeckyVoxPanel.tsx            # 状态和设置面板
-  steam-client.d.ts               # 最小 SteamClient 类型声明
 
 backend/
   Cargo.toml
@@ -135,7 +134,7 @@ Rust core 保存的 `settings.json` 是持久化设置的事实来源，位置�
 | --- | --- | --- |
 | `schema_version` | `1` | 未知版本先按已知字段迁移，不盲目保留旧值 |
 | `model` | `small` | v1 白名单为 `tiny` / `base` / `small` / `medium` 多语言模型 |
-| `language` | `auto` | v1 固定为自动检测，不开放云端或远程后端 |
+| `language` | `auto` | 仅 `auto` / `zh`；非法值回退 `auto`，不开放云端或远程后端 |
 | `gpu_enabled` | `true` | 严格布尔值；缺 Vulkan 二进制时可回退 CPU 并提示 |
 | `ptt_mode` | `hold` | 仅 `hold` / `toggle` |
 | `controller_primary` | `R4` | 仅允许 UI 给出的按键符号 |
@@ -150,6 +149,8 @@ Rust core 保存的 `settings.json` 是持久化设置的事实来源，位置�
 - 非法输出模式绝不能回退到 `steam_input_send`。
 - 修改按键绑定时清空已按下集合，避免旧按键状态触发新绑定。
 - 模型、语言和 GPU 选项在录音开始时冻结到本次会话；录音中修改只影响下一次。
+- 模型、语言或 GPU 变化会重启持久 voxtype daemon；录音中修改时延迟到当前 session
+  结束或取消后重启，不能让旧 daemon 继续使用过期设置。
 - 自动发送采用更严格规则：会话开始时与输出发生时都必须是 `steam_input_send`。这样既不能在会话中途“升级”为自动发送，用户中途关闭自动发送也会立即阻止发送。
 - `auto_start=true` 时，依赖和模型齐全后在插件加载时启动服务；`false` 时保持 Stopped，面板中的 `Enable Decky Vox` 开关显示关闭，用户打开后立即启动本次会话的服务。
 
@@ -285,7 +286,7 @@ event    { v, kind:"event", instance_id, seq, name, payload }
 ### voxtype 适配器
 
 - v1 不做 whisper.cpp FFI；Rust 通过 Engine trait 和固定 argv 管理外部 voxtype，方便 fake engine 测试和将来替换实现。
-- 初始候选为 decky-voxtype 已使用的 voxtype `v0.6.5` CPU/Vulkan 版本，不跟随 latest。接入前验证外部 start/stop、纯文件结果、彻底关闭内置输出、`small` + `auto`、两种产物和 SteamOS 依赖；不满足时才改用固定 whisper.cpp CLI adapter。
+- 初始候选为 decky-voxtype 已使用的 voxtype `v0.6.5` CPU/Vulkan 版本，不跟随 latest。接入前验证外部 start/stop、纯文件结果、彻底关闭内置输出、`small` + `auto` / `zh`、两种产物和 SteamOS 依赖；不满足时才改用固定 whisper.cpp CLI adapter。
 - `package.json.remote_binary` 声明两个 Linux x86-64 URL 和 SHA-256，由 Decky CLI 下载、校验并放入 ZIP。
 - 使用插件隔离的 config/XDG 目录、`--no-hotkey`、`--quiet`、文件输出和每 session 唯一结果文件，关闭 voxtype 自带热键、剪贴板、键盘注入、音频反馈及自动提交。清除继承来的 `VOXTYPE_*`/`RUST_LOG` 覆盖，防止宿主环境改变引擎、远端端点、输出或日志级别；所有文字输出只能经过前端 `OutputCoordinator`。
 - 会话目录权限为 `0700`，结果读取后删除，core 启动时清理同一实例运行目录的异常遗留；持久日志不得记录成功转写正文。
@@ -301,6 +302,7 @@ event    { v, kind:"event", instance_id, seq, name, payload }
 
 - Enable Decky Vox
 - Model
+- Language (`Auto detect` / `Chinese (zh)`)
 - Vulkan GPU acceleration
 - PTT mode
 - Primary button
@@ -416,7 +418,7 @@ README 至少提供中文的安装、首次模型准备、使用流程、自动�
 
 | 范围 | 必测行为 |
 | --- | --- |
-| Rust 设置归一化 | 缺字段、错误类型、非法枚举、未知字段、延迟边界、重复组合键、安全输出默认值、原子写 |
+| Rust 设置归一化 | 缺字段、错误类型、非法模型/语言枚举、未知字段、延迟边界、重复组合键、安全输出默认值、原子写 |
 | hold 单键 | 首次 down 启动、重复 down 无动作、首次 up 停止、重复 up 无动作 |
 | hold 组合键 | 单键不足不启动、组合完成只启动一次、任一键松开只停止一次 |
 | toggle | 完成组合只切换一次、释放只重新布防、重复事件无动作 |
@@ -429,6 +431,7 @@ README 至少提供中文的安装、首次模型准备、使用流程、自动�
 | 延迟取消 | 250 ms 期间禁用、切换模式、换 session 或卸载均不按 Enter |
 | 重复结果 | 同一 session 只消费和输出一次 |
 | 启动策略 | `auto_start=true/false` 与运行时 Enable 的所有路径可操作且状态一致 |
+| 识别设置重启 | model/language/GPU 在空闲时立即重启，活动 session 结束或取消后使用新设置重启 |
 | 多控制器 | session owner 之外的控制器不能启动或停止当前会话 |
 | Rust service | fake Engine 下 start/stop 幂等、快速 release、busy、取消、迟到/空结果、进程组清理、argv 无 shell |
 | IPC | hello、版本不匹配、畸形/超大消息、request mux、instance/seq、EOF、stdout 无日志污染 |

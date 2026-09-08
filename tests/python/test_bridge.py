@@ -9,27 +9,8 @@ import unittest
 from unittest import mock
 
 
-class FakeLogger:
-    def __init__(self):
-        self.entries = []
-
-    def _record(self, level, message, *args):
-        if args:
-            message = message % args
-        self.entries.append((level, message))
-
-    def info(self, message, *args):
-        self._record("info", message, *args)
-
-    def warning(self, message, *args):
-        self._record("warning", message, *args)
-
-    def error(self, message, *args):
-        self._record("error", message, *args)
-
-
 fake_decky = types.ModuleType("decky")
-fake_decky.logger = FakeLogger()
+fake_decky.logger = mock.Mock()
 fake_decky.emitted = []
 
 
@@ -166,7 +147,7 @@ class FakeProcess:
 class BridgeTestCase(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         fake_decky.emitted.clear()
-        fake_decky.logger.entries.clear()
+        fake_decky.logger.reset_mock()
         self.temporary_directory = tempfile.TemporaryDirectory()
         root = self.temporary_directory.name
         self.paths = {

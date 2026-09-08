@@ -7,6 +7,7 @@ import type {
   CoreEvent,
   CoreSnapshot,
 } from "../../src/api/backend.ts";
+import { parseSnapshotResult } from "../../src/api/protocol.ts";
 import { DEFAULT_SETTINGS } from "../../src/domain/settings.ts";
 import type { ControllerButtonEvent } from "../../src/domain/pttMachine.ts";
 import { DeckyVoxRuntime } from "../../src/runtime/deckyVoxRuntime.ts";
@@ -213,6 +214,10 @@ function snapshotEvent(
   phase: CoreSnapshot["phase"],
   enabled: boolean,
   error: CoreSnapshot["error"] = null,
+  settings: CoreSnapshot["settings"] = {
+    ...DEFAULT_SETTINGS,
+    output_mode: "steam_input_send",
+  },
 ): CoreEvent {
   return {
     v: 1,
@@ -222,7 +227,7 @@ function snapshotEvent(
     name: "snapshot",
     payload: snapshot(phase, enabled, {
       seq,
-      settings: { ...DEFAULT_SETTINGS, output_mode: "steam_input_send" },
+      settings,
       error,
     }),
   };
@@ -289,6 +294,48 @@ async function waitFor(predicate: () => boolean, message: string): Promise<void>
   }
   throw new Error(message);
 }
+
+test("snapshot responses accept objects and reject non-object values", () => {
+  const raw = snapshot("ready");
+  assert.equal(parseSnapshotResult(raw), raw);
+  for (const invalid of [null, undefined, [], 1, "snapshot"]) {
+    assert.throws(() => parseSnapshotResult(invalid), /invalid snapshot/);
+  }
+});
+
+test("snapshot alone updates bindings, cancels recording, and acknowledges auto-send", async () => {
+  const backend = new FakeBackend();
+  const output = createOutputTracker();
+  const harness = createRuntime(backend, output.coordinator);
+  await waitFor(() => harness.runtime.getState().phase === "ready", "runtime did not initialize");
+  harness.press(r4(true));
+  await waitFor(() => backend.calls.includes("record_start:1"), "session did not start");
+
+  backend.settings = {
+    ...DEFAULT_SETTINGS,
+    controller_primary: "R5",
+    output_mode: "steam_input_send",
+  };
+  backend.emitCore(snapshotEvent(1, "recording", true, null, backend.settings));
+  assert.deepEqual(harness.runtime.getState().settings, backend.settings);
+  assert.equal(backend.calls.includes("cancel_session:1"), true);
+  backend.emitCore(outputEvent(INSTANCE_ID, 2, 1));
+  backend.emitCore(snapshotEvent(3, "ready", true, null, backend.settings));
+
+  harness.press(r4(false));
+  harness.press(r4(true));
+  harness.press({ ...r4(true), button: "R5" });
+  harness.press({ ...r4(false), button: "R5" });
+  await waitFor(() => backend.calls.includes("record_stop:2"), "new binding did not stop session");
+  backend.emitCore(outputEvent(INSTANCE_ID, 4, 2, "新绑定"));
+  backend.emitCore(snapshotEvent(5, "ready", true, null, backend.settings));
+  await waitFor(() => output.keys.length === 2, "snapshot did not acknowledge auto-send");
+
+  assert.deepEqual(output.texts, ["新绑定"]);
+  assert.deepEqual(output.keys, [true, false]);
+  assert.equal(harness.runtime.getState().lastOutcome, "Sent");
+  harness.runtime.dispose();
+});
 
 test("rapid hold press/release serializes record_start before record_stop", async () => {
   const backend = new FakeBackend();

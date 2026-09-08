@@ -33,7 +33,7 @@ Steam Deck 本地进行。
 | 设置 | 默认值 |
 | --- | --- |
 | Model | `small`（多语言） |
-| Language | `auto` |
+| Language | `auto`（可选固定中文 `zh`） |
 | Vulkan GPU acceleration | 开启 |
 | PTT mode | 按住说话（hold） |
 | Primary button | R4 |
@@ -53,6 +53,10 @@ Steam Deck 本地进行。
 可以选择第二个按键形成组合键。hold 模式下，两键都按下才开始，任意一个松开就
 停止；toggle 模式下，完整按下一次开始，再完整按下一次停止，松键只负责重新布防。
 重复的按下/松开事件会被去重。监听属于插件生命周期，因此关闭插件面板后仍工作。
+
+Language 默认使用 `Auto detect`，适合混合语言输入。主要说中文时可选择
+`Chinese (zh)`，跳过每段录音的全语言自动检测；它只固定识别语言，不会把内容翻译成
+其他语言。切换语言会重新启动本地识别后端；若正在录音，则在当前转写结束后生效。
 
 ## 输出模式与风险
 
@@ -107,6 +111,13 @@ Steam 客户端更新变化，开发机测试不能证明实机行为。
 
 检查 SteamOS 的默认录音源和权限，关闭占用麦克风的程序后重试。插件以最小权限运行，
 不会为了绕过权限自动提升为 root。错误 `MICROPHONE_UNAVAILABLE` 表示录音服务未就绪。
+
+### 中文短句识别不准确
+
+主要说中文时，在 Settings 中将 Language 从 `Auto detect` 改为 `Chinese (zh)`，避免
+短句被自动检测成其他语言。若仍不理想，可在同一批句子上比较 `small` 与 `medium`
+模型；`medium` 需要更多磁盘、内存和转写时间，实际收益与性能必须在 Steam Deck 上
+验证。
 
 ### 显示 Input completed，但输入框没有文字
 

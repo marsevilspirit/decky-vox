@@ -7,7 +7,6 @@ import {
 import type { Settings } from "../domain/settings";
 import { asRecord, parseSnapshotResult } from "./protocol";
 
-export { PROTOCOL_VERSION, asRecord, parseSnapshotResult } from "./protocol";
 export const CORE_EVENT_NAME = "decky_vox_event";
 export const BRIDGE_STATUS_EVENT_NAME = "decky_vox_bridge_status";
 
@@ -86,7 +85,7 @@ export interface BackendClient {
   setEnabled(enabled: boolean): Promise<CoreSnapshot>;
   recordStart(sessionId: number): Promise<CoreSnapshot>;
   recordStop(sessionId: number): Promise<CoreSnapshot>;
-  cancelSession(sessionId: number | null): Promise<CoreSnapshot | null>;
+  cancelSession(sessionId: number | null): Promise<CoreSnapshot>;
   installModel(model: string): Promise<void>;
   cancelModel(): Promise<void>;
   onCoreEvent(listener: (event: CoreEvent) => void): () => void;
@@ -114,7 +113,7 @@ export function createBackendClient(): BackendClient {
       return parseSnapshotResult(await recordStopCall(sessionId));
     },
     async cancelSession(sessionId) {
-      return parseOptionalSnapshotResult(await cancelSessionCall(sessionId));
+      return parseSnapshotResult(await cancelSessionCall(sessionId));
     },
     async installModel(model) {
       await installModelCall(model);
@@ -142,16 +141,8 @@ export function createBackendClient(): BackendClient {
   };
 }
 
-function parseOptionalSnapshotResult(value: unknown): CoreSnapshot | null {
-  if (value === null || value === undefined) return null;
-  const outer = asRecord(value);
-  if (outer && outer.snapshot === null) return null;
-  return parseSnapshotResult(value);
-}
-
 function parseHello(value: unknown): HelloResult {
-  const outer = asRecord(value);
-  const raw = outer && "hello" in outer ? asRecord(outer.hello) : outer;
+  const raw = asRecord(value);
   if (
     !raw ||
     typeof raw.protocol_version !== "number" ||

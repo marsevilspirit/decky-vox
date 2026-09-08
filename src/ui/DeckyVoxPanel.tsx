@@ -9,12 +9,14 @@ import { Fragment, useEffect, useState } from "react";
 
 import {
   CONTROLLER_BUTTONS,
+  LANGUAGE_OPTIONS,
   MODEL_OPTIONS,
   OUTPUT_MODES,
   PTT_MODES,
 } from "../domain/settings";
 import type {
   ControllerButton,
+  Language,
   ModelName,
   OutputMode,
   PttMode,
@@ -31,6 +33,11 @@ const MODEL_LABELS: Record<ModelName, string> = {
   base: "Base (multilingual)",
   small: "Small (multilingual, recommended)",
   medium: "Medium (multilingual)",
+};
+
+const LANGUAGE_LABELS: Record<Language, string> = {
+  auto: "Auto detect",
+  zh: "Chinese (zh)",
 };
 
 const OUTPUT_LABELS: Record<OutputMode, string> = {
@@ -195,7 +202,7 @@ export function DeckyVoxPanel({ runtime }: DeckyVoxPanelProps) {
           <PanelSectionRow>
             <DropdownItem
               label="Model"
-              description="Multilingual; language detection is fixed to auto in v1."
+              description="Multilingual Whisper model used for local transcription."
               rgOptions={MODEL_OPTIONS.map((model) => ({
                 data: model,
                 label: MODEL_LABELS[model],
@@ -203,6 +210,20 @@ export function DeckyVoxPanel({ runtime }: DeckyVoxPanelProps) {
               selectedOption={state.settings.model}
               onChange={(option) =>
                 run(runtime.updateSettings({ model: option.data as ModelName }))
+              }
+            />
+          </PanelSectionRow>
+          <PanelSectionRow>
+            <DropdownItem
+              label="Language"
+              description="Use Chinese for primarily Mandarin speech; use Auto detect for mixed languages."
+              rgOptions={LANGUAGE_OPTIONS.map((language) => ({
+                data: language,
+                label: LANGUAGE_LABELS[language],
+              }))}
+              selectedOption={state.settings.language}
+              onChange={(option) =>
+                run(runtime.updateSettings({ language: option.data as Language }))
               }
             />
           </PanelSectionRow>

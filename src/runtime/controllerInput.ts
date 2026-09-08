@@ -1,4 +1,4 @@
-import type { ControllerButton, Settings } from "../domain/settings";
+import type { ControllerButton } from "../domain/settings";
 import type { ControllerButtonEvent } from "../domain/pttMachine";
 import type { SteamTextInput } from "./outputCoordinator";
 
@@ -123,12 +123,6 @@ export function buttonLabel(button: ControllerButton | null): string {
     L5: "L5 (back grip)",
   };
   return labels[button];
-}
-
-export function settingsUseButton(settings: Settings, button: ControllerButton): boolean {
-  return (
-    settings.controller_primary === button || settings.controller_secondary === button
-  );
 }
 
 function errorMessage(error: unknown): string {

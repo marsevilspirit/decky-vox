@@ -3,6 +3,9 @@ export const SETTINGS_SCHEMA_VERSION = 1 as const;
 export const MODEL_OPTIONS = ["tiny", "base", "small", "medium"] as const;
 export type ModelName = (typeof MODEL_OPTIONS)[number];
 
+export const LANGUAGE_OPTIONS = ["auto", "zh"] as const;
+export type Language = (typeof LANGUAGE_OPTIONS)[number];
+
 export const PTT_MODES = ["hold", "toggle"] as const;
 export type PttMode = (typeof PTT_MODES)[number];
 
@@ -24,7 +27,7 @@ export type ControllerButton = (typeof CONTROLLER_BUTTONS)[number];
 export interface Settings {
   schema_version: typeof SETTINGS_SCHEMA_VERSION;
   model: ModelName;
-  language: "auto";
+  language: Language;
   gpu_enabled: boolean;
   ptt_mode: PttMode;
   controller_primary: ControllerButton;
@@ -95,7 +98,7 @@ export function normalizeSettings(input: unknown): Settings {
   return {
     schema_version: SETTINGS_SCHEMA_VERSION,
     model: enumValue(raw.model, MODEL_OPTIONS, DEFAULT_SETTINGS.model),
-    language: "auto",
+    language: enumValue(raw.language, LANGUAGE_OPTIONS, DEFAULT_SETTINGS.language),
     gpu_enabled: strictBoolean(raw.gpu_enabled, DEFAULT_SETTINGS.gpu_enabled),
     ptt_mode: enumValue(raw.ptt_mode, PTT_MODES, DEFAULT_SETTINGS.ptt_mode),
     controller_primary: primary,

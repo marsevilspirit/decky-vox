@@ -50,7 +50,6 @@ export interface RuntimeState {
 
 interface ActiveSession {
   id: number;
-  instanceId: string;
   startOutputMode: OutputMode;
   outputConsumed: boolean;
   cancelled: boolean;
@@ -197,7 +196,7 @@ export class DeckyVoxRuntime {
 
     await this.serialize(async () => {
       if (cancelledSessionId !== null) {
-        await this.applyOptionalSnapshot(this.backend.cancelSession(cancelledSessionId));
+        await this.applySnapshotResponse(this.backend.cancelSession(cancelledSessionId));
       }
       await this.applySnapshotResponse(this.backend.updateSettings(updated));
     });
@@ -286,7 +285,6 @@ export class DeckyVoxRuntime {
       }
       const session: ActiveSession = {
         id: this.nextSessionId++,
-        instanceId: this.currentInstanceId,
         startOutputMode:
           this.state.settings.output_mode === "steam_input_send" &&
           !this.autoSendAcknowledged
@@ -354,9 +352,6 @@ export class DeckyVoxRuntime {
         }
         break;
       }
-      case "settings":
-        this.applySettingsEvent(event.payload);
-        break;
       case "output": {
         const payload = parseOutputPayload(event.payload);
         if (payload) void this.handleOutput(payload, event.instance_id);
@@ -471,23 +466,6 @@ export class DeckyVoxRuntime {
     }
   }
 
-  private applySettingsEvent(value: unknown): void {
-    const settings = normalizeSettings(value);
-    if (!bindingsEqual(this.state.settings, settings)) {
-      const hadIntent = this.ptt.configure({
-        mode: settings.ptt_mode,
-        primary: settings.controller_primary,
-        secondary: settings.controller_secondary,
-      });
-      if (hadIntent) {
-        const sessionId = this.cancelLocalSession();
-        if (sessionId !== null) void this.backend.cancelSession(sessionId).catch(() => {});
-      }
-    }
-    this.autoSendAcknowledged = settings.output_mode === "steam_input_send";
-    this.patchState({ settings });
-  }
-
   private applyModelProgress(value: unknown): void {
     const payload = (asRecord(value) ?? {}) as ModelProgressPayload;
     const percent =
@@ -516,13 +494,6 @@ export class DeckyVoxRuntime {
 
   private async applySnapshotResponse(response: Promise<CoreSnapshot>): Promise<void> {
     this.applySnapshot(await response);
-  }
-
-  private async applyOptionalSnapshot(
-    response: Promise<CoreSnapshot | null>,
-  ): Promise<void> {
-    const snapshot = await response;
-    if (snapshot) this.applySnapshot(snapshot);
   }
 
   private applySnapshot(snapshot: CoreSnapshot, eventSeq?: number): void {
