@@ -663,10 +663,12 @@ class Plugin:
         )
 
     async def record_start(self, session_id: int) -> Any:
-        return await self._core().call(
+        bridge = self._core()
+        return await bridge.call(
             "record_start",
             {"session_id": session_id},
-            timeout=DEFAULT_CONTROL_TIMEOUT_SECONDS,
+            # Each session cold-starts the model, including bounded GPU fallback.
+            timeout=bridge.startup_timeout,
         )
 
     async def record_stop(self, session_id: int) -> Any:

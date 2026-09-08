@@ -28,6 +28,7 @@ export type VisibleStatus =
   | "Stopped"
   | "Setup required"
   | "Ready"
+  | "Starting"
   | "Recording"
   | "Transcribing"
   | "Failed";
@@ -146,7 +147,7 @@ export class DeckyVoxRuntime {
       case "setup_required":
         return "Setup required";
       case "ready":
-        return "Ready";
+        return this.currentSession && !this.currentSession.outputConsumed ? "Starting" : "Ready";
       case "recording":
         return "Recording";
       case "transcribing":
@@ -266,6 +267,8 @@ export class DeckyVoxRuntime {
     const canStart =
       this.state.enabled &&
       this.state.phase === "ready" &&
+      !this.state.modelDownloading &&
+      this.currentSession === null &&
       this.state.controllerReady &&
       this.currentInstanceId !== null;
     const action = this.ptt.handle(event, canStart);
@@ -294,7 +297,7 @@ export class DeckyVoxRuntime {
         cancelled: false,
       };
       this.currentSession = session;
-      this.patchState({ phase: "recording", lastOutcome: null, error: null });
+      this.patchState({ lastOutcome: null, error: null });
       void this.serialize(async () => {
         try {
           await this.applySnapshotResponse(this.backend.recordStart(session.id));

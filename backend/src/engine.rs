@@ -67,8 +67,6 @@ pub trait Engine: Send {
     fn disable(&mut self);
     fn start_recording(&mut self, session_id: u64) -> Result<(), EngineError>;
     fn stop_recording(&mut self, session_id: u64) -> Result<(), EngineError>;
-    fn cancel_recording(&mut self, session_id: u64, settings: &Settings)
-        -> Result<(), EngineError>;
 }
 
 #[derive(Debug, Clone)]
@@ -100,6 +98,8 @@ pub struct VoxtypeEngine {
     daemon_stop: Option<Arc<AtomicBool>>,
     status_pid: Option<u32>,
     status_stop: Option<Arc<AtomicBool>>,
+    daemon_thread: Option<std::thread::JoinHandle<()>>,
+    status_thread: Option<std::thread::JoinHandle<()>>,
     active_binary: Option<PathBuf>,
     active_backend: Option<String>,
     active_capture: Arc<Mutex<Option<ActiveCapture>>>,
@@ -114,6 +114,8 @@ impl VoxtypeEngine {
             daemon_stop: None,
             status_pid: None,
             status_stop: None,
+            daemon_thread: None,
+            status_thread: None,
             active_binary: None,
             active_backend: None,
             active_capture: Arc::new(Mutex::new(None)),
@@ -334,14 +336,14 @@ impl VoxtypeEngine {
         let status_alive = Arc::new(AtomicBool::new(true));
         let status_published = Arc::new(AtomicBool::new(false));
         let (ready_tx, ready_rx) = mpsc::channel();
-        self.spawn_status_monitor(
+        self.status_thread = Some(self.spawn_status_monitor(
             status,
             stdout,
             status_stop.clone(),
             status_alive.clone(),
             status_published.clone(),
             ready_tx,
-        );
+        ));
         self.status_pid = Some(status_pid);
         self.status_stop = Some(status_stop);
 
@@ -393,11 +395,15 @@ impl VoxtypeEngine {
                 "status monitor exited after ready signal".to_string(),
             ));
         }
-        self.spawn_daemon_watcher(daemon, daemon_stop);
+        self.daemon_thread = Some(self.spawn_daemon_watcher(daemon, daemon_stop));
         Ok(())
     }
 
-    fn spawn_daemon_watcher(&self, daemon: Arc<Mutex<Child>>, stopping: Arc<AtomicBool>) {
+    fn spawn_daemon_watcher(
+        &self,
+        daemon: Arc<Mutex<Child>>,
+        stopping: Arc<AtomicBool>,
+    ) -> std::thread::JoinHandle<()> {
         let events = self.events.clone();
         let active_capture = self.active_capture.clone();
         std::thread::spawn(move || loop {
@@ -423,7 +429,7 @@ impl VoxtypeEngine {
             if stopping.load(Ordering::Acquire) {
                 break;
             }
-        });
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -435,7 +441,7 @@ impl VoxtypeEngine {
         alive: Arc<AtomicBool>,
         published: Arc<AtomicBool>,
         ready: Sender<Result<(), String>>,
-    ) {
+    ) -> std::thread::JoinHandle<()> {
         let events = self.events.clone();
         let active_capture = self.active_capture.clone();
         std::thread::spawn(move || {
@@ -496,7 +502,7 @@ impl VoxtypeEngine {
                     message: format!("voxtype status monitor exited ({status:?})"),
                 });
             }
-        });
+        })
     }
 
     fn stop_daemon(&mut self) {
@@ -513,6 +519,14 @@ impl VoxtypeEngine {
             if let Ok(mut daemon) = daemon.lock() {
                 let _ = stop_child_group(&mut daemon, STOP_TIMEOUT);
             }
+        }
+        // Reap the monitors before another session can start. Otherwise an old
+        // watcher could report a failure against the next session's capture.
+        for thread in [self.status_thread.take(), self.daemon_thread.take()]
+            .into_iter()
+            .flatten()
+        {
+            let _ = thread.join();
         }
         if let Ok(mut active_capture) = self.active_capture.lock() {
             if let Some(capture) = active_capture.take() {
@@ -628,37 +642,6 @@ impl Engine for VoxtypeEngine {
             return Err(error);
         }
         Ok(())
-    }
-
-    fn cancel_recording(
-        &mut self,
-        session_id: u64,
-        settings: &Settings,
-    ) -> Result<(), EngineError> {
-        let active = self
-            .active_capture
-            .lock()
-            .ok()
-            .and_then(|capture| capture.as_ref().map(|capture| capture.session_id));
-        match active {
-            Some(active) if active != session_id => {
-                return Err(EngineError::SessionMismatch(session_id));
-            }
-            // A max-duration terminal may already be queued for the actor.
-            // Service ownership still makes cancellation valid and the actor
-            // will reject the now-late output after removing the session.
-            None => return Ok(()),
-            Some(_) => {}
-        }
-        let binary = self
-            .active_binary
-            .clone()
-            .ok_or_else(|| EngineError::Start("engine is not enabled".to_string()))?;
-        // Cancellation must not permit the old transcription to surface. A
-        // controlled daemon restart is reserved for this uncommon path; normal
-        // PTT start/stop keeps the daemon and loaded model alive.
-        self.stop_daemon();
-        self.start_daemon(&binary, settings)
     }
 }
 
@@ -1043,23 +1026,56 @@ mod tests {
     }
 
     #[test]
-    fn cancellation_is_idempotent_after_monitor_consumes_capture() {
+    fn disable_reaps_processes_and_monitors_before_returning() {
         let directory = tempfile::tempdir().unwrap();
-        let (events, _receiver) = mpsc::channel();
+        let (events, receiver) = mpsc::channel();
         let mut engine = VoxtypeEngine::new(paths(directory.path()), events).unwrap();
-        assert!(engine.cancel_recording(44, &Settings::default()).is_ok());
+        let mut daemon_command = Command::new("/bin/sleep");
+        daemon_command.arg("60");
+        isolate_process(&mut daemon_command);
+        let daemon = Arc::new(Mutex::new(daemon_command.spawn().unwrap()));
+        let daemon_stop = Arc::new(AtomicBool::new(false));
+        engine.daemon = Some(daemon.clone());
+        engine.daemon_stop = Some(daemon_stop.clone());
+        engine.daemon_thread = Some(engine.spawn_daemon_watcher(daemon.clone(), daemon_stop));
 
-        let (recording_tx, _recording_rx) = mpsc::sync_channel(1);
+        let mut status_command = Command::new("/bin/sleep");
+        status_command.arg("60").stdout(Stdio::piped());
+        isolate_process(&mut status_command);
+        let mut status = status_command.spawn().unwrap();
+        engine.status_pid = Some(status.id());
+        let stdout = status.stdout.take().unwrap();
+        let status_stop = Arc::new(AtomicBool::new(false));
+        let status_alive = Arc::new(AtomicBool::new(true));
+        let (ready, _ready_receiver) = mpsc::channel();
+        engine.status_stop = Some(status_stop.clone());
+        engine.status_thread = Some(engine.spawn_status_monitor(
+            status,
+            stdout,
+            status_stop,
+            status_alive.clone(),
+            Arc::new(AtomicBool::new(true)),
+            ready,
+        ));
+
+        let output_path = directory.path().join("result.txt");
+        fs::write(&output_path, "private").unwrap();
         *engine.active_capture.lock().unwrap() = Some(ActiveCapture {
             session_id: 45,
-            output_path: directory.path().join("result.txt"),
+            output_path: output_path.clone(),
             recording_seen: true,
             stop_requested: false,
-            recording_ack: Some(recording_tx),
+            recording_ack: None,
         });
-        assert!(matches!(
-            engine.cancel_recording(44, &Settings::default()),
-            Err(EngineError::SessionMismatch(44))
-        ));
+        engine.disable();
+        engine.disable();
+
+        assert!(daemon.lock().unwrap().try_wait().unwrap().is_some());
+        assert!(!status_alive.load(Ordering::Acquire));
+        assert!(engine.daemon_thread.is_none());
+        assert!(engine.status_thread.is_none());
+        assert!(engine.active_capture.lock().unwrap().is_none());
+        assert!(!output_path.exists());
+        assert!(receiver.try_recv().is_err());
     }
 }

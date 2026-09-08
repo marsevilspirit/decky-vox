@@ -92,7 +92,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        let inbound = match input_rx.recv_timeout(Duration::from_millis(40)) {
+        // No engine or download is running while idle: sleep until a request
+        // or stdin EOF arrives instead of waking the core 25 times per second.
+        let incoming = if service.has_background_work() {
+            input_rx.recv_timeout(Duration::from_millis(40))
+        } else {
+            input_rx
+                .recv()
+                .map_err(|_| mpsc::RecvTimeoutError::Disconnected)
+        };
+        let inbound = match incoming {
             Ok(inbound) => inbound,
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
             Err(mpsc::RecvTimeoutError::Disconnected) => Inbound::Eof,

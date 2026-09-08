@@ -46,7 +46,7 @@ Steam Deck 本地进行。
 
 1. 打开 Steam 快捷菜单中的好友聊天。
 2. **先让目标聊天输入框获得焦点。** Decky Vox 不会寻找、点击或验证聊天框。
-3. 按住 R4，状态变为 Recording 后说话。
+3. 按住 R4，等待 Starting 变为 Recording 后再说话；Starting 表示麦克风尚未确认就绪。
 4. 松开 R4，等待 Transcribing 完成。
 5. `steam_input` 模式只输入文本，由你检查后手动发送。
 
@@ -56,7 +56,18 @@ Steam Deck 本地进行。
 
 Language 默认使用 `Auto detect`，适合混合语言输入。主要说中文时可选择
 `Chinese (zh)`，跳过每段录音的全语言自动检测；它只固定识别语言，不会把内容翻译成
-其他语言。切换语言会重新启动本地识别后端；若正在录音，则在当前转写结束后生效。
+其他语言。模型、语言和 GPU 设置在下一次按下 PTT 时生效，当前录音沿用开始时的设置。
+
+## 空闲资源与录音启动
+
+启用插件只让 PTT 待命，不预加载识别模型。按下 PTT 后才启动 voxtype、加载模型并
+打开麦克风；转写完成、取消或失败后退出识别进程及状态监控，释放它们持有的模型和
+GPU 资源。空闲 Rust core 阻塞等待请求，不进行定时轮询；控制器事件监听和轻量桥接
+仍然保留，因此不承诺绝对零内存占用或零游戏影响。
+
+每次录音都需要冷启动，模型越大通常等待越久。请等 Starting 变为 Recording 再开口。
+游戏帧率、功耗、实际资源回收和启动等待时间仍需在 Steam Deck 上测量；转写期间仍会
+使用 CPU/GPU。模型下载与校验也会产生网络和磁盘负载，建议在非游戏期间进行。
 
 ## 输出模式与风险
 
@@ -86,9 +97,12 @@ Language 默认使用 `Auto detect`，适合混合语言输入。主要说中文
 ## 状态
 
 后端阶段为 Stopped、Setup required、Ready、Recording、Transcribing 或 Failed。
-Ready 同时要求 Rust 后端已准备且前端能够注册控制器输入。最近一次输出结果单独显示为
+Ready 表示模型文件已验证、Rust core 和控制器监听已待命，识别引擎尚未运行；二进制、
+GPU 和麦克风会在按下 PTT 后检查。最近一次输出结果单独显示为
 Input completed、Sent、Copied to clipboard、No speech recognized 或 Failed，不能将
 这些结果理解为 Steam 已确认送达。
+
+前端在请求开始录音、等待后端确认期间显示 Starting；只有收到录音确认才显示 Recording。
 
 Decky Vox 不创建 Steam 系统通知；录音、转写和输出状态只显示在插件面板中，避免挤占
 通知中心。底层 voxtype 的录音、停止和转写通知也全部关闭。
@@ -114,6 +128,7 @@ Steam 客户端更新变化，开发机测试不能证明实机行为。
 
 ### 中文短句识别不准确
 
+如果经常漏掉开头，按住 PTT 后等 Starting 变为 Recording 再说话；说完后再松键。
 主要说中文时，在 Settings 中将 Language 从 `Auto detect` 改为 `Chinese (zh)`，避免
 短句被自动检测成其他语言。若仍不理想，可在同一批句子上比较 `small` 与 `medium`
 模型；`medium` 需要更多磁盘、内存和转写时间，实际收益与性能必须在 Steam Deck 上
@@ -215,7 +230,9 @@ Linux 容器还会用 `readelf` / `ldd` 检查三个 ELF 的目标机器和动�
 
 - R4/R5 输入事件、组合键、重复事件和面板关闭后的监听。
 - 内置麦克风设备、PipeWire/权限和长时间录音稳定性。
-- Vulkan 模型加载与性能、CPU 回退、内存和温度表现。
+- 每次 PTT 冷启动、Vulkan 模型加载与性能、CPU 回退、内存和温度表现。
+- 转写完成、取消或失败后无 voxtype/状态监控进程残留，空闲时无常驻识别模型或推理进程；
+  对比启用前后的游戏帧时间与功耗，不能用单元测试推断“零影响”。
 - Steam 好友聊天当前焦点框的中文原生注入。
 - 自动 Enter 的约 250 ms 延迟、按下/释放及不会卡键。
 - SteamOS、Steam 客户端和 Decky Loader 更新后的兼容性。

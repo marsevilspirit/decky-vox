@@ -149,10 +149,11 @@ Rust core 保存的 `settings.json` 是持久化设置的事实来源，位置�
 - 非法输出模式绝不能回退到 `steam_input_send`。
 - 修改按键绑定时清空已按下集合，避免旧按键状态触发新绑定。
 - 模型、语言和 GPU 选项在录音开始时冻结到本次会话；录音中修改只影响下一次。
-- 模型、语言或 GPU 变化会重启持久 voxtype daemon；录音中修改时延迟到当前 session
-  结束或取消后重启，不能让旧 daemon 继续使用过期设置。
+- voxtype 仅在实际 PTT 会话中运行，结束或取消后退出；模型、语言或 GPU 变化在
+  下一次 PTT 启动时生效，空闲时不为设置变化启动识别引擎。
 - 自动发送采用更严格规则：会话开始时与输出发生时都必须是 `steam_input_send`。这样既不能在会话中途“升级”为自动发送，用户中途关闭自动发送也会立即阻止发送。
-- `auto_start=true` 时，依赖和模型齐全后在插件加载时启动服务；`false` 时保持 Stopped，面板中的 `Enable Decky Vox` 开关显示关闭，用户打开后立即启动本次会话的服务。
+- `auto_start=true` 时，模型齐全后在插件加载时进入 Ready 待命；`false` 时保持 Stopped。
+  Enable 开关只控制待命状态，模型加载和引擎启动延迟到按下 PTT。
 
 ## 7. PTT 状态机
 
@@ -311,7 +312,10 @@ event    { v, kind:"event", instance_id, seq, name, payload }
 - Auto-send delay
 - Auto-start on boot
 
-`Enable Decky Vox` 显示本次运行时服务状态：打开后向 Rust 发送 `set_enabled`，只有 Rust ack 并进入 backend ready 才算后端启动成功；关闭会取消 session 并停止 Engine。它本身不写入设置文件。`auto_start` 决定 core 启动后是否自动启用。缺二进制或模型时显示 Setup required；模型完成安装后，`auto_start=true` 才自动启动 backend，否则保持 Stopped。
+`Enable Decky Vox` 显示本次运行时待命状态：打开后向 Rust 发送 `set_enabled`，模型已验证时
+进入 Ready，关闭会取消 session 并停止 Engine。它本身不写入设置文件。`auto_start` 决定
+core 启动后是否自动启用；模型缺失显示 Setup required，安装完成后按当前 enabled 状态
+进入 Ready 或保持 Stopped。空闲时不启动 voxtype。
 
 选择 `steam_input_send` 时必须经过明确风险确认，旁边持续显示“焦点错误可能把内容发送到非预期位置”的警告；取消确认则保持 `steam_input`。
 
@@ -323,7 +327,11 @@ Stopped → Ready → Recording → Transcribing → Ready
 
 Rust 只拥有 backend phase：`stopped | setup_required | ready | recording | transcribing | failed`。TypeScript 另行维护 controller capability；用户可见 Ready = `backend phase == ready` 且控制器监听可用。Rust 不感知前端 controller adapter，Python 也不合成 Ready。`Input completed`、`Sent` 和 `Copied to clipboard` 只能由 TypeScript 输出层产生。
 
-用户可见 Ready 表示 IPC 握手、前端控制器 capability、Rust core、运行二进制、所选模型和 voxtype daemon 已准备。麦克风只能在每次实际开始录音时验证；`record_start` 必须等待 daemon 确认进入录音状态，失败或超时则报告 `MICROPHONE_UNAVAILABLE`，不能伪报 Recording。UI 还要区分 Backend unavailable、Protocol mismatch 与 Core crashed。
+用户可见 Ready 表示 IPC 握手、前端控制器 capability、Rust core 和所选模型文件已准备。
+按下 PTT 后前端显示 Starting，`record_start` 冷启动引擎并检查二进制、GPU 和麦克风，
+等待实际录音确认后才显示 Recording；桥接使用 90 秒启动预算覆盖 GPU 失败后的 CPU
+回退。引擎启动错误和麦克风错误分别报告，不能伪报 Recording。转写完成、取消和失败后
+退出进程组并回收监控线程；空闲 core 阻塞等待请求，录音/下载期间仍处理异步事件。
 
 `last_outcome` 为：
 
@@ -431,7 +439,7 @@ README 至少提供中文的安装、首次模型准备、使用流程、自动�
 | 延迟取消 | 250 ms 期间禁用、切换模式、换 session 或卸载均不按 Enter |
 | 重复结果 | 同一 session 只消费和输出一次 |
 | 启动策略 | `auto_start=true/false` 与运行时 Enable 的所有路径可操作且状态一致 |
-| 识别设置重启 | model/language/GPU 在空闲时立即重启，活动 session 结束或取消后使用新设置重启 |
+| 识别设置与资源释放 | model/language/GPU 在下次 PTT 启动时生效；空闲无引擎进程，结束/取消/失败后释放，下一次录音重新加载 |
 | 多控制器 | session owner 之外的控制器不能启动或停止当前会话 |
 | Rust service | fake Engine 下 start/stop 幂等、快速 release、busy、取消、迟到/空结果、进程组清理、argv 无 shell |
 | IPC | hello、版本不匹配、畸形/超大消息、request mux、instance/seq、EOF、stdout 无日志污染 |

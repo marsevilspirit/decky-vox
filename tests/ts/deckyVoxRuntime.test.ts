@@ -337,6 +337,34 @@ test("snapshot alone updates bindings, cancels recording, and acknowledges auto-
   harness.runtime.dispose();
 });
 
+test("Recording waits for microphone acknowledgement and preserves the pending session owner", async () => {
+  const backend = new FakeBackend();
+  let resolveStart!: (value: CoreSnapshot) => void;
+  backend.deferredStart = new Promise((resolve) => {
+    resolveStart = resolve;
+  });
+  const harness = createRuntime(backend);
+  await waitFor(() => harness.runtime.getState().phase === "ready", "runtime did not initialize");
+
+  harness.press(r4(true));
+  assert.equal(harness.runtime.visibleStatus(), "Starting");
+  await waitFor(() => backend.calls.includes("record_start:1"), "record_start was not called");
+  assert.equal(harness.runtime.visibleStatus(), "Starting");
+  assert.equal(harness.runtime.getState().phase, "ready");
+  harness.press({ ...r4(true), controllerId: 1 });
+  harness.press({ ...r4(false), controllerId: 1 });
+
+  resolveStart(snapshot("recording"));
+  await waitFor(() => harness.runtime.visibleStatus() === "Recording", "recording was not acknowledged");
+  harness.press(r4(false));
+  await waitFor(() => backend.calls.includes("record_stop:1"), "owner release did not stop recording");
+  assert.deepEqual(
+    backend.calls.filter((call) => call.startsWith("record_")),
+    ["record_start:1", "record_stop:1"],
+  );
+  harness.runtime.dispose();
+});
+
 test("rapid hold press/release serializes record_start before record_stop", async () => {
   const backend = new FakeBackend();
   let resolveStart: ((value: CoreSnapshot) => void) | null = null;

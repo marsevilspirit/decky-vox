@@ -58,6 +58,7 @@ const STATUS_COLORS: Record<string, string> = {
   Stopped: "#6c757d",
   "Setup required": "#ffc107",
   Ready: "#28a745",
+  Starting: "#ffc107",
   Recording: "#dc3545",
   Transcribing: "#ffc107",
   Failed: "#dc3545",

@@ -88,8 +88,6 @@ pub struct Service<E: Engine> {
     engine: E,
     store: SettingsStore,
     settings: Settings,
-    /// Settings currently loaded by the persistent voxtype daemon.
-    engine_settings: Settings,
     instance_id: String,
     seq: u64,
     phase: BackendPhase,
@@ -125,12 +123,10 @@ impl<E: Engine> Service<E> {
             .load()
             .map_err(|error| CoreError::new("SETTINGS_IO_FAILED", error.to_string()))?;
         let auto_start_pending = settings.auto_start;
-        let engine_settings = settings.clone();
         let service = Self {
             engine,
             store,
             settings,
-            engine_settings,
             instance_id,
             seq: 0,
             phase: BackendPhase::Stopped,
@@ -157,7 +153,7 @@ impl<E: Engine> Service<E> {
         }
         self.auto_start_pending = false;
         self.refresh_model_installed();
-        self.enable_backend();
+        self.arm_backend();
         vec![self.snapshot_event()]
     }
 
@@ -201,6 +197,10 @@ impl<E: Engine> Service<E> {
             engine_backend: self.engine_backend.clone(),
             error: self.error.clone(),
         }
+    }
+
+    pub fn has_background_work(&self) -> bool {
+        self.session.is_some() || self.model_installing.is_some()
     }
 
     pub fn error_events(&mut self, error: &CoreError) -> Vec<Event> {
@@ -258,6 +258,9 @@ impl<E: Engine> Service<E> {
                 code,
                 message,
             } => {
+                if self.engine_backend.is_none() {
+                    return Vec::new();
+                }
                 if let Some(session_id) = session_id {
                     if self.session.as_ref().map(|session| session.id) != Some(session_id) {
                         return Vec::new();
@@ -328,8 +331,8 @@ impl<E: Engine> Service<E> {
                         if model == self.settings.model {
                             self.model_installed = true;
                         }
-                        if self.enabled && model == self.settings.model {
-                            self.enable_backend();
+                        if self.enabled && model == self.settings.model && self.session.is_none() {
+                            self.arm_backend();
                         }
                         let size = model::spec(&model).map(|spec| spec.size).unwrap_or(0);
                         vec![
@@ -417,7 +420,7 @@ impl<E: Engine> Service<E> {
         self.error = None;
 
         if engine_settings_changed(&old, &self.settings) && self.session.is_none() {
-            self.restart_backend();
+            self.finish_session();
         }
 
         let mut result = CommandResult::value(to_value(self.snapshot())?);
@@ -433,7 +436,7 @@ impl<E: Engine> Service<E> {
         self.auto_start_pending = false;
         if enabled && (!self.enabled || self.phase == BackendPhase::Failed) {
             self.refresh_model_installed();
-            self.enable_backend();
+            self.arm_backend();
         } else if !enabled && self.enabled {
             self.enabled = false;
             if let Some(session) = self.session.take() {
@@ -465,15 +468,27 @@ impl<E: Engine> Service<E> {
         {
             return Err(CoreError::new("BUSY", "another session is active"));
         }
+        if self.model_installing.is_some() {
+            return Err(CoreError::new("BUSY", "a model is downloading"));
+        }
         if !self.enabled || self.phase != BackendPhase::Ready {
             return Err(CoreError::new("NOT_READY", "backend is not ready"));
         }
-        if let Err(error) = self.engine.start_recording(session_id) {
-            self.phase = BackendPhase::Failed;
-            self.engine_backend = None;
-            self.error = Some(ErrorBody::new(error.code(), error.to_string()));
-            return Err(CoreError::new(error.code(), error.to_string()));
-        }
+        let started = self.engine.enable(&self.settings).and_then(|backend| {
+            self.engine.start_recording(session_id)?;
+            Ok(backend)
+        });
+        let backend = match started {
+            Ok(backend) => backend,
+            Err(error) => {
+                self.engine.disable();
+                self.phase = BackendPhase::Failed;
+                self.engine_backend = None;
+                self.error = Some(ErrorBody::new(error.code(), error.to_string()));
+                return Err(CoreError::new(error.code(), error.to_string()));
+            }
+        };
+        self.engine_backend = Some(backend);
         self.session = Some(Session {
             id: session_id,
             stop_requested: false,
@@ -598,35 +613,14 @@ impl<E: Engine> Service<E> {
         result
     }
 
-    fn enable_backend(&mut self) {
+    fn arm_backend(&mut self) {
         self.enabled = true;
-        self.restart_backend();
-    }
-
-    fn restart_backend(&mut self) {
-        self.engine.disable();
-        self.engine_backend = None;
         self.error = None;
-        if !self.enabled {
-            self.phase = BackendPhase::Stopped;
-            return;
-        }
-        if !self.model_installed {
-            self.phase = BackendPhase::SetupRequired;
-            return;
-        }
-        match self.engine.enable(&self.settings) {
-            Ok(backend) => {
-                self.engine_backend = Some(backend);
-                self.engine_settings = self.settings.clone();
-                self.phase = BackendPhase::Ready;
-            }
-            Err(error) => {
-                self.engine_backend = None;
-                self.phase = BackendPhase::Failed;
-                self.error = Some(ErrorBody::new(error.code(), error.to_string()));
-            }
-        }
+        self.phase = if self.model_installed {
+            BackendPhase::Ready
+        } else {
+            BackendPhase::SetupRequired
+        };
     }
 
     fn cancel_current_session(&mut self) {
@@ -634,57 +628,23 @@ impl<E: Engine> Service<E> {
             return;
         };
         self.last_finished_session = Some(session.id);
-        if !self.enabled {
-            self.engine.disable();
-            self.engine_backend = None;
-            self.phase = BackendPhase::Stopped;
-            return;
-        }
-        let engine_changed = engine_settings_changed(&self.engine_settings, &self.settings);
-        if self.engine_settings.model != self.settings.model {
-            self.refresh_model_installed();
-        }
-        if !self.model_installed {
-            self.engine.disable();
-            self.engine_backend = None;
-            self.phase = BackendPhase::SetupRequired;
-            return;
-        }
-        if engine_changed {
-            // The active daemon still owns the old frozen model/GPU/language settings.
-            // Stop it outright, then start a daemon for the newly persisted
-            // settings instead of asking the old binary to restart itself.
-            self.restart_backend();
-            return;
-        }
-        if let Err(error) = self
-            .engine
-            .cancel_recording(session.id, &self.engine_settings)
-        {
-            self.engine_backend = None;
-            self.phase = BackendPhase::Failed;
-            self.error = Some(ErrorBody::new(error.code(), error.to_string()));
-            return;
-        }
-        self.phase = BackendPhase::Ready;
+        self.finish_session();
     }
 
     fn finish_session(&mut self) {
-        if !self.enabled {
-            self.engine.disable();
-            self.engine_backend = None;
-            self.phase = BackendPhase::Stopped;
-            return;
-        }
-        let engine_changed = engine_settings_changed(&self.engine_settings, &self.settings);
-        if self.engine_settings.model != self.settings.model {
+        self.engine.disable();
+        self.engine_backend = None;
+        self.error = None;
+        if self.enabled && !self.model_installed {
             self.refresh_model_installed();
         }
-        if engine_changed || !self.model_installed {
-            self.restart_backend();
+        self.phase = if !self.enabled {
+            BackendPhase::Stopped
+        } else if !self.model_installed {
+            BackendPhase::SetupRequired
         } else {
-            self.phase = BackendPhase::Ready;
-        }
+            BackendPhase::Ready
+        };
     }
 
     fn refresh_model_installed(&mut self) {
@@ -754,7 +714,8 @@ mod tests {
         enabled_settings: Vec<(String, String, bool)>,
         starts: Vec<u64>,
         stops: Vec<u64>,
-        cancels: Vec<u64>,
+        fail_enable: bool,
+        fail_start: bool,
     }
 
     struct FakeEngine(Arc<Mutex<FakeState>>);
@@ -768,6 +729,9 @@ mod tests {
                 settings.language.clone(),
                 settings.gpu_enabled,
             ));
+            if state.fail_enable {
+                return Err(EngineError::Start("model failed to load".to_string()));
+            }
             Ok("fake".to_string())
         }
 
@@ -776,21 +740,16 @@ mod tests {
         }
 
         fn start_recording(&mut self, session_id: u64) -> Result<(), EngineError> {
-            self.0.lock().unwrap().starts.push(session_id);
+            let mut state = self.0.lock().unwrap();
+            state.starts.push(session_id);
+            if state.fail_start {
+                return Err(EngineError::Command("microphone unavailable".to_string()));
+            }
             Ok(())
         }
 
         fn stop_recording(&mut self, session_id: u64) -> Result<(), EngineError> {
             self.0.lock().unwrap().stops.push(session_id);
-            Ok(())
-        }
-
-        fn cancel_recording(
-            &mut self,
-            session_id: u64,
-            _settings: &Settings,
-        ) -> Result<(), EngineError> {
-            self.0.lock().unwrap().cancels.push(session_id);
             Ok(())
         }
     }
@@ -824,7 +783,7 @@ mod tests {
     }
 
     #[test]
-    fn auto_start_enables_ready_backend() {
+    fn auto_start_arms_ready_without_loading_backend() {
         let (mut service, state, _directory) = service_unstarted();
         assert!(!service.snapshot().enabled);
         assert_eq!(state.lock().unwrap().enabled, 0);
@@ -832,7 +791,122 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert!(service.snapshot().enabled);
         assert_eq!(service.snapshot().phase, BackendPhase::Ready);
-        assert_eq!(state.lock().unwrap().enabled, 1);
+        assert!(service.snapshot().engine_backend.is_none());
+        assert!(!service.has_background_work());
+        assert_eq!(state.lock().unwrap().enabled, 0);
+    }
+
+    #[test]
+    fn engines_live_only_during_sessions_and_background_work_tracks_downloads() {
+        let (mut service, state, directory) = service();
+        service
+            .handle("set_enabled", json!({"enabled": false}))
+            .unwrap();
+        service
+            .handle("set_enabled", json!({"enabled": true}))
+            .unwrap();
+        service
+            .handle("update_settings", json!({"settings": {"language": "zh"}}))
+            .unwrap();
+        service
+            .handle("install_model", json!({"model": "small"}))
+            .unwrap();
+        assert!(service.has_background_work());
+        assert_eq!(
+            service
+                .handle("record_start", json!({"session_id": 1}))
+                .unwrap_err()
+                .code,
+            "BUSY"
+        );
+        assert_eq!(state.lock().unwrap().enabled, 0);
+        service.handle("cancel_model", json!({})).unwrap();
+        assert!(service.has_background_work());
+        service.handle_model_event(ModelEvent::Finished {
+            model: "small".to_string(),
+            result: Ok(directory.path().join("model.bin")),
+        });
+        assert!(!service.has_background_work());
+        assert_eq!(state.lock().unwrap().enabled, 0);
+        assert!(service.snapshot().engine_backend.is_none());
+
+        for (session_id, text, stop_requested) in
+            [(1, "完成", true), (2, " ", true), (3, "截止", false)]
+        {
+            let disabled_before = state.lock().unwrap().disabled;
+            service
+                .handle("record_start", json!({"session_id": session_id}))
+                .unwrap();
+            service
+                .handle("record_start", json!({"session_id": session_id}))
+                .unwrap();
+            assert_eq!(state.lock().unwrap().enabled, session_id as usize);
+            assert!(service.has_background_work());
+            assert_eq!(service.snapshot().engine_backend.as_deref(), Some("fake"));
+            if stop_requested {
+                service
+                    .handle("record_stop", json!({"session_id": session_id}))
+                    .unwrap();
+                assert_eq!(state.lock().unwrap().disabled, disabled_before);
+            }
+            let terminal = EngineEvent::Transcription {
+                session_id,
+                text: text.to_string(),
+                stop_requested,
+            };
+            assert!(!service.handle_engine_event(terminal.clone()).is_empty());
+            assert!(service.handle_engine_event(terminal).is_empty());
+            assert_eq!(state.lock().unwrap().disabled, disabled_before + 1);
+            assert!(!service.has_background_work());
+            assert_eq!(service.snapshot().phase, BackendPhase::Ready);
+            assert!(service.snapshot().engine_backend.is_none());
+        }
+
+        service
+            .handle("record_start", json!({"session_id": 4}))
+            .unwrap();
+        let disabled_before = state.lock().unwrap().disabled;
+        service
+            .handle("cancel_session", json!({"session_id": 4}))
+            .unwrap();
+        assert_eq!(state.lock().unwrap().disabled, disabled_before + 1);
+        assert!(!service.has_background_work());
+        assert!(service.snapshot().engine_backend.is_none());
+        assert!(service
+            .handle_engine_event(EngineEvent::Transcription {
+                session_id: 4,
+                text: "late".to_string(),
+                stop_requested: true,
+            })
+            .is_empty());
+        assert!(service
+            .handle_engine_event(EngineEvent::Failure {
+                session_id: None,
+                code: "ENGINE_EXITED".to_string(),
+                message: "old daemon exited".to_string(),
+            })
+            .is_empty());
+        assert_eq!(service.snapshot().phase, BackendPhase::Ready);
+
+        for (session_id, fail_enable) in [(5, true), (6, false)] {
+            {
+                let mut state = state.lock().unwrap();
+                state.fail_enable = fail_enable;
+                state.fail_start = !fail_enable;
+            }
+            service
+                .handle("set_enabled", json!({"enabled": true}))
+                .unwrap();
+            let disabled_before = state.lock().unwrap().disabled;
+            assert!(service
+                .handle("record_start", json!({"session_id": session_id}))
+                .is_err());
+            assert_eq!(state.lock().unwrap().enabled, session_id as usize);
+            assert_eq!(state.lock().unwrap().disabled, disabled_before + 1);
+            assert!(!service.has_background_work());
+            assert!(service.snapshot().engine_backend.is_none());
+            assert_eq!(service.snapshot().phase, BackendPhase::Failed);
+        }
     }
 
     #[test]
@@ -915,7 +989,7 @@ mod tests {
                 stop_requested: true,
             })
             .is_empty());
-        assert_eq!(state.lock().unwrap().cancels, vec![5]);
+        assert_eq!(state.lock().unwrap().disabled, 1);
     }
 
     #[test]
@@ -958,7 +1032,7 @@ mod tests {
     }
 
     #[test]
-    fn model_change_during_session_is_deferred_until_transcription_finishes() {
+    fn model_change_during_session_is_loaded_on_next_recording() {
         let (mut service, state, _directory) = service();
         service
             .handle("record_start", json!({"session_id": 30}))
@@ -980,6 +1054,11 @@ mod tests {
         });
         assert!(events.iter().any(|event| event.name == "output"));
         assert_eq!(service.snapshot().phase, BackendPhase::Ready);
+        assert!(service.snapshot().engine_backend.is_none());
+        assert_eq!(state.lock().unwrap().enabled, 1);
+        service
+            .handle("record_start", json!({"session_id": 35}))
+            .unwrap();
         let state = state.lock().unwrap();
         assert!(state.disabled > disables_before);
         assert_eq!(
@@ -989,7 +1068,7 @@ mod tests {
     }
 
     #[test]
-    fn cancelling_after_gpu_change_restarts_with_new_settings() {
+    fn cancelling_after_gpu_change_loads_new_settings_on_next_recording() {
         let (mut service, state, _directory) = service();
         service
             .handle("record_start", json!({"session_id": 31}))
@@ -1008,9 +1087,13 @@ mod tests {
             .unwrap();
 
         assert_eq!(service.snapshot().phase, BackendPhase::Ready);
+        assert!(service.snapshot().engine_backend.is_none());
+        assert_eq!(state.lock().unwrap().enabled, 1);
+        service
+            .handle("record_start", json!({"session_id": 35}))
+            .unwrap();
         let state = state.lock().unwrap();
         assert!(state.disabled > disables_before);
-        assert!(state.cancels.is_empty());
         assert_eq!(
             state.enabled_settings.last(),
             Some(&("small".to_string(), "auto".to_string(), false))
@@ -1018,7 +1101,7 @@ mod tests {
     }
 
     #[test]
-    fn language_change_without_active_session_restarts_immediately() {
+    fn language_change_without_active_session_waits_for_recording() {
         let (mut service, state, _directory) = service();
         let disables_before = state.lock().unwrap().disabled;
 
@@ -1031,6 +1114,11 @@ mod tests {
         assert_eq!(result.events[0].payload["settings"]["language"], "zh");
         assert_eq!(service.snapshot().phase, BackendPhase::Ready);
         assert_eq!(service.snapshot().settings.language, "zh");
+        assert!(service.snapshot().engine_backend.is_none());
+        assert_eq!(state.lock().unwrap().enabled, 0);
+        service
+            .handle("record_start", json!({"session_id": 35}))
+            .unwrap();
         let state = state.lock().unwrap();
         assert!(state.disabled > disables_before);
         assert_eq!(
@@ -1040,7 +1128,7 @@ mod tests {
     }
 
     #[test]
-    fn language_change_during_session_is_deferred_until_transcription_finishes() {
+    fn language_change_during_session_is_loaded_on_next_recording() {
         let (mut service, state, _directory) = service();
         service
             .handle("record_start", json!({"session_id": 33}))
@@ -1063,6 +1151,11 @@ mod tests {
 
         assert!(events.iter().any(|event| event.name == "output"));
         assert_eq!(service.snapshot().phase, BackendPhase::Ready);
+        assert!(service.snapshot().engine_backend.is_none());
+        assert_eq!(state.lock().unwrap().enabled, 1);
+        service
+            .handle("record_start", json!({"session_id": 35}))
+            .unwrap();
         let state = state.lock().unwrap();
         assert!(state.disabled > disables_before);
         assert_eq!(
@@ -1072,7 +1165,7 @@ mod tests {
     }
 
     #[test]
-    fn cancelling_after_language_change_restarts_with_new_settings() {
+    fn cancelling_after_language_change_loads_new_settings_on_next_recording() {
         let (mut service, state, _directory) = service();
         service
             .handle("record_start", json!({"session_id": 34}))
@@ -1088,9 +1181,13 @@ mod tests {
             .unwrap();
 
         assert_eq!(service.snapshot().phase, BackendPhase::Ready);
+        assert!(service.snapshot().engine_backend.is_none());
+        assert_eq!(state.lock().unwrap().enabled, 1);
+        service
+            .handle("record_start", json!({"session_id": 35}))
+            .unwrap();
         let state = state.lock().unwrap();
         assert!(state.disabled > disables_before);
-        assert!(state.cancels.is_empty());
         assert_eq!(
             state.enabled_settings.last(),
             Some(&("small".to_string(), "zh".to_string(), true))

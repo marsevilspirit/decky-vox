@@ -497,7 +497,7 @@ class BridgeTestCase(unittest.IsolatedAsyncioTestCase):
                 ("update_settings", {"settings": {"model": "small"}}, 90.0),
                 ("set_enabled", {"enabled": True}, 90.0),
                 ("set_enabled", {"enabled": False}, None),
-                ("record_start", {"session_id": 41}, 15.0),
+                ("record_start", {"session_id": 41}, 90.0),
                 ("record_stop", {"session_id": 41}, 15.0),
                 ("cancel_session", {"session_id": None}, 90.0),
                 ("install_model", {"model": "small"}, None),
