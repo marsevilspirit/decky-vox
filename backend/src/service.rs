@@ -1032,72 +1032,79 @@ mod tests {
     }
 
     #[test]
-    fn model_change_during_session_is_loaded_on_next_recording() {
-        let (mut service, state, _directory) = service();
-        service
-            .handle("record_start", json!({"session_id": 30}))
-            .unwrap();
-        let disables_before = state.lock().unwrap().disabled;
-        service
-            .handle("update_settings", json!({"settings": {"model": "base"}}))
-            .unwrap();
-        assert_eq!(service.snapshot().phase, BackendPhase::Recording);
-        assert_eq!(state.lock().unwrap().disabled, disables_before);
+    fn engine_settings_changed_during_session_are_loaded_on_next_recording() {
+        for (patch, model, language) in [
+            (json!({"model": "base"}), "base", "auto"),
+            (json!({"language": "zh"}), "small", "zh"),
+        ] {
+            let (mut service, state, _directory) = service();
+            service
+                .handle("record_start", json!({"session_id": 30}))
+                .unwrap();
+            let disables_before = state.lock().unwrap().disabled;
+            service
+                .handle("update_settings", json!({"settings": patch}))
+                .unwrap();
+            assert_eq!(service.snapshot().phase, BackendPhase::Recording);
+            assert_eq!(state.lock().unwrap().disabled, disables_before);
 
-        service
-            .handle("record_stop", json!({"session_id": 30}))
-            .unwrap();
-        let events = service.handle_engine_event(EngineEvent::Transcription {
-            session_id: 30,
-            text: "完成".to_string(),
-            stop_requested: true,
-        });
-        assert!(events.iter().any(|event| event.name == "output"));
-        assert_eq!(service.snapshot().phase, BackendPhase::Ready);
-        assert!(service.snapshot().engine_backend.is_none());
-        assert_eq!(state.lock().unwrap().enabled, 1);
-        service
-            .handle("record_start", json!({"session_id": 35}))
-            .unwrap();
-        let state = state.lock().unwrap();
-        assert!(state.disabled > disables_before);
-        assert_eq!(
-            state.enabled_settings.last(),
-            Some(&("base".to_string(), "auto".to_string(), true))
-        );
+            service
+                .handle("record_stop", json!({"session_id": 30}))
+                .unwrap();
+            let events = service.handle_engine_event(EngineEvent::Transcription {
+                session_id: 30,
+                text: "完成".to_string(),
+                stop_requested: true,
+            });
+            assert!(events.iter().any(|event| event.name == "output"));
+            assert_eq!(service.snapshot().phase, BackendPhase::Ready);
+            assert!(service.snapshot().engine_backend.is_none());
+            assert_eq!(state.lock().unwrap().enabled, 1);
+            service
+                .handle("record_start", json!({"session_id": 35}))
+                .unwrap();
+            let state = state.lock().unwrap();
+            assert!(state.disabled > disables_before);
+            assert_eq!(
+                state.enabled_settings.last(),
+                Some(&(model.to_string(), language.to_string(), true))
+            );
+        }
     }
 
     #[test]
-    fn cancelling_after_gpu_change_loads_new_settings_on_next_recording() {
-        let (mut service, state, _directory) = service();
-        service
-            .handle("record_start", json!({"session_id": 31}))
-            .unwrap();
-        let disables_before = state.lock().unwrap().disabled;
-        service
-            .handle(
-                "update_settings",
-                json!({"settings": {"gpu_enabled": false}}),
-            )
-            .unwrap();
-        assert_eq!(service.snapshot().phase, BackendPhase::Recording);
+    fn cancelling_after_engine_settings_change_loads_them_on_next_recording() {
+        for (patch, language, gpu_enabled) in [
+            (json!({"gpu_enabled": false}), "auto", false),
+            (json!({"language": "zh"}), "zh", true),
+        ] {
+            let (mut service, state, _directory) = service();
+            service
+                .handle("record_start", json!({"session_id": 31}))
+                .unwrap();
+            let disables_before = state.lock().unwrap().disabled;
+            service
+                .handle("update_settings", json!({"settings": patch}))
+                .unwrap();
+            assert_eq!(service.snapshot().phase, BackendPhase::Recording);
 
-        service
-            .handle("cancel_session", json!({"session_id": 31}))
-            .unwrap();
+            service
+                .handle("cancel_session", json!({"session_id": 31}))
+                .unwrap();
 
-        assert_eq!(service.snapshot().phase, BackendPhase::Ready);
-        assert!(service.snapshot().engine_backend.is_none());
-        assert_eq!(state.lock().unwrap().enabled, 1);
-        service
-            .handle("record_start", json!({"session_id": 35}))
-            .unwrap();
-        let state = state.lock().unwrap();
-        assert!(state.disabled > disables_before);
-        assert_eq!(
-            state.enabled_settings.last(),
-            Some(&("small".to_string(), "auto".to_string(), false))
-        );
+            assert_eq!(service.snapshot().phase, BackendPhase::Ready);
+            assert!(service.snapshot().engine_backend.is_none());
+            assert_eq!(state.lock().unwrap().enabled, 1);
+            service
+                .handle("record_start", json!({"session_id": 35}))
+                .unwrap();
+            let state = state.lock().unwrap();
+            assert!(state.disabled > disables_before);
+            assert_eq!(
+                state.enabled_settings.last(),
+                Some(&("small".to_string(), language.to_string(), gpu_enabled))
+            );
+        }
     }
 
     #[test]
@@ -1116,73 +1123,6 @@ mod tests {
         assert_eq!(service.snapshot().settings.language, "zh");
         assert!(service.snapshot().engine_backend.is_none());
         assert_eq!(state.lock().unwrap().enabled, 0);
-        service
-            .handle("record_start", json!({"session_id": 35}))
-            .unwrap();
-        let state = state.lock().unwrap();
-        assert!(state.disabled > disables_before);
-        assert_eq!(
-            state.enabled_settings.last(),
-            Some(&("small".to_string(), "zh".to_string(), true))
-        );
-    }
-
-    #[test]
-    fn language_change_during_session_is_loaded_on_next_recording() {
-        let (mut service, state, _directory) = service();
-        service
-            .handle("record_start", json!({"session_id": 33}))
-            .unwrap();
-        let disables_before = state.lock().unwrap().disabled;
-        service
-            .handle("update_settings", json!({"settings": {"language": "zh"}}))
-            .unwrap();
-        assert_eq!(service.snapshot().phase, BackendPhase::Recording);
-        assert_eq!(state.lock().unwrap().disabled, disables_before);
-
-        service
-            .handle("record_stop", json!({"session_id": 33}))
-            .unwrap();
-        let events = service.handle_engine_event(EngineEvent::Transcription {
-            session_id: 33,
-            text: "完成".to_string(),
-            stop_requested: true,
-        });
-
-        assert!(events.iter().any(|event| event.name == "output"));
-        assert_eq!(service.snapshot().phase, BackendPhase::Ready);
-        assert!(service.snapshot().engine_backend.is_none());
-        assert_eq!(state.lock().unwrap().enabled, 1);
-        service
-            .handle("record_start", json!({"session_id": 35}))
-            .unwrap();
-        let state = state.lock().unwrap();
-        assert!(state.disabled > disables_before);
-        assert_eq!(
-            state.enabled_settings.last(),
-            Some(&("small".to_string(), "zh".to_string(), true))
-        );
-    }
-
-    #[test]
-    fn cancelling_after_language_change_loads_new_settings_on_next_recording() {
-        let (mut service, state, _directory) = service();
-        service
-            .handle("record_start", json!({"session_id": 34}))
-            .unwrap();
-        let disables_before = state.lock().unwrap().disabled;
-        service
-            .handle("update_settings", json!({"settings": {"language": "zh"}}))
-            .unwrap();
-        assert_eq!(service.snapshot().phase, BackendPhase::Recording);
-
-        service
-            .handle("cancel_session", json!({"session_id": 34}))
-            .unwrap();
-
-        assert_eq!(service.snapshot().phase, BackendPhase::Ready);
-        assert!(service.snapshot().engine_backend.is_none());
-        assert_eq!(state.lock().unwrap().enabled, 1);
         service
             .handle("record_start", json!({"session_id": 35}))
             .unwrap();

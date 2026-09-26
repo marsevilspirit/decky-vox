@@ -53,7 +53,6 @@ interface ActiveSession {
   id: number;
   startOutputMode: OutputMode;
   outputConsumed: boolean;
-  cancelled: boolean;
 }
 
 type StateListener = () => void;
@@ -294,7 +293,6 @@ export class DeckyVoxRuntime {
             ? "steam_input"
             : this.state.settings.output_mode,
         outputConsumed: false,
-        cancelled: false,
       };
       this.currentSession = session;
       this.patchState({ lastOutcome: null, error: null });
@@ -455,7 +453,6 @@ export class DeckyVoxRuntime {
         this.state.enabled &&
         this.currentInstanceId === instanceId &&
         this.currentSession === session &&
-        !session.cancelled &&
         session.startOutputMode === "steam_input_send" &&
         this.autoSendAcknowledged &&
         this.state.settings.output_mode === "steam_input_send" &&
@@ -463,7 +460,7 @@ export class DeckyVoxRuntime {
         this.state.error === null &&
         this.state.bridgeCode === null,
     );
-    if (this.currentSession === session && !session.cancelled) {
+    if (this.currentSession === session) {
       this.patchState({ lastOutcome: result.outcome, error: result.error ?? null });
       this.finishLocalSession(session);
     }
@@ -571,7 +568,6 @@ export class DeckyVoxRuntime {
 
   private cancelLocalSession(): number | null {
     const session = this.currentSession;
-    if (session) session.cancelled = true;
     this.currentSession = null;
     bestEffort(() => this.ptt.reset());
     bestEffort(() => this.output.releaseReturn());

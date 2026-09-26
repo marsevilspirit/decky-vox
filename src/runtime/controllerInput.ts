@@ -115,14 +115,7 @@ export function createSteamTextInput(): SteamTextInput {
 }
 
 export function buttonLabel(button: ControllerButton | null): string {
-  if (button === null) return "None (single button)";
-  const labels: Record<ControllerButton, string> = {
-    R4: "R4 (back grip)",
-    L4: "L4 (back grip)",
-    R5: "R5 (back grip)",
-    L5: "L5 (back grip)",
-  };
-  return labels[button];
+  return button === null ? "None (single button)" : `${button} (back grip)`;
 }
 
 function errorMessage(error: unknown): string {

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
@@ -146,11 +146,7 @@ impl SettingsStore {
         fs::create_dir_all(parent)?;
         let temporary = parent.join(format!(".settings.json.{}.tmp", std::process::id()));
         let write_result = (|| {
-            let mut file = OpenOptions::new()
-                .create(true)
-                .truncate(true)
-                .write(true)
-                .open(&temporary)?;
+            let mut file = File::create(&temporary)?;
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;

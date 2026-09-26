@@ -1,6 +1,6 @@
 use fs2::available_space;
 use sha2::{Digest, Sha256};
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -107,10 +107,6 @@ pub fn models_dir(settings_dir: &Path) -> PathBuf {
     settings_dir.join("data").join("voxtype").join("models")
 }
 
-pub fn model_path(settings_dir: &Path, name: &str) -> Result<PathBuf, ModelError> {
-    Ok(models_dir(settings_dir).join(spec(name)?.filename))
-}
-
 pub fn is_installed(settings_dir: &Path, name: &str) -> bool {
     let Ok(model) = spec(name) else {
         return false;
@@ -202,11 +198,7 @@ where
     fs::create_dir_all(parent)?;
     let temporary = parent.join(format!(".{}.part", model.filename));
     let result = (|| {
-        let mut output = OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .open(&temporary)?;
+        let mut output = File::create(&temporary)?;
         let mut hasher = Sha256::new();
         let mut buffer = vec![0_u8; 256 * 1024];
         let mut downloaded = 0_u64;

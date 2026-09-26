@@ -1,41 +1,6 @@
 {
     "version": "2.0.0",
     "tasks": [
-        //PRELIMINARY SETUP TASKS
-        //Dependency setup task
-        {
-            "label": "depsetup",
-            "type": "shell",
-            "group": "none",
-            "detail": "Install depedencies for basic setup",
-            "command": "${workspaceFolder}/.vscode/setup.sh",
-            // // placeholder for windows scripts, not currently planned
-            // "windows": {
-            //     "command": "call -c ${workspaceFolder}\\.vscode\\setup.bat",
-            // },
-            "problemMatcher": []
-        },
-        //pnpm setup task to grab all needed modules
-        {
-            "label": "pnpmsetup",
-            "type": "shell",
-            "group": "none",
-            "detail": "Setup pnpm",
-            "command": "which pnpm && pnpm i",
-            "problemMatcher": []
-        },
-        //Preliminary "All-in-one" setup task
-        {
-            "label": "setup",
-            "detail": "Set up depedencies, pnpm and update Decky Frontend Library.",
-            "dependsOrder": "sequence",
-            "dependsOn": [
-                "depsetup",
-                "pnpmsetup",
-                "updatefrontendlib"
-            ],
-            "problemMatcher": []
-        },
         //Preliminary Deploy Config Setup
         {
             "label": "settingscheck",
@@ -61,10 +26,9 @@
         {
             "label": "build",
             "group": "build",
-            "detail": "Build decky-plugin-template",
+            "detail": "Build Decky Vox",
             "dependsOrder": "sequence",
             "dependsOn": [
-                "setup",
                 "settingscheck",
                 "cli-build",
             ],
@@ -116,15 +80,6 @@
             "problemMatcher": []
         },
         //GENERAL TASKS
-        //Update Decky Frontend Library, aka DFL
-        {
-            "label": "updatefrontendlib",
-            "type": "shell",
-            "group": "build",
-            "detail": "Update @decky/ui aka DFL",
-            "command": "pnpm update @decky/ui --latest",
-            "problemMatcher": []
-        },
         //Used chmod plugins folder to allow copy-over of files
         {
             "label": "chmodplugins",

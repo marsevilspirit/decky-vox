@@ -9,7 +9,7 @@ use crate::process::{
 use crate::settings::Settings;
 use serde_json::Value;
 use std::ffi::OsString;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -101,7 +101,6 @@ pub struct VoxtypeEngine {
     daemon_thread: Option<std::thread::JoinHandle<()>>,
     status_thread: Option<std::thread::JoinHandle<()>>,
     active_binary: Option<PathBuf>,
-    active_backend: Option<String>,
     active_capture: Arc<Mutex<Option<ActiveCapture>>>,
 }
 
@@ -117,7 +116,6 @@ impl VoxtypeEngine {
             daemon_thread: None,
             status_thread: None,
             active_binary: None,
-            active_backend: None,
             active_capture: Arc::new(Mutex::new(None)),
         };
         // Privacy cleanup cannot depend on a model being installed or the
@@ -237,11 +235,7 @@ impl VoxtypeEngine {
         let temporary = config_dir.join(".config.toml.tmp");
         let text = render_config(settings, output_path);
         let result = (|| {
-            let mut file = OpenOptions::new()
-                .create(true)
-                .truncate(true)
-                .write(true)
-                .open(&temporary)?;
+            let mut file = File::create(&temporary)?;
             file.write_all(text.as_bytes())?;
             file.sync_all()?;
             fs::rename(&temporary, &config_path)?;
@@ -282,12 +276,7 @@ impl VoxtypeEngine {
         self.write_config(settings, &idle_output)?;
         fs::create_dir_all(&self.paths.log_dir).map_err(EngineError::Config)?;
         let log_path = self.paths.log_dir.join("voxtype-daemon.log");
-        let log = OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .open(log_path)
-            .map_err(EngineError::Config)?;
+        let log = File::create(log_path).map_err(EngineError::Config)?;
         let status_log = log.try_clone().map_err(EngineError::Config)?;
         let daemon_error_log = log.try_clone().map_err(EngineError::Config)?;
 
@@ -546,12 +535,6 @@ impl VoxtypeEngine {
         run_checked(command, RECORD_COMMAND_TIMEOUT)
             .map_err(|error| EngineError::Command(error.to_string()))
     }
-
-    fn fail_active_capture(&mut self) {
-        self.stop_daemon();
-        self.active_binary = None;
-        self.active_backend = None;
-    }
 }
 
 impl Engine for VoxtypeEngine {
@@ -574,14 +557,12 @@ impl Engine for VoxtypeEngine {
             preferred
         };
         self.active_binary = Some(selected);
-        self.active_backend = Some(backend.clone());
         Ok(backend)
     }
 
     fn disable(&mut self) {
         self.stop_daemon();
         self.active_binary = None;
-        self.active_backend = None;
     }
 
     fn start_recording(&mut self, session_id: u64) -> Result<(), EngineError> {
@@ -611,11 +592,11 @@ impl Engine for VoxtypeEngine {
         });
         drop(capture);
         if let Err(error) = self.run_record_command(record_start_argv(&output_path)) {
-            self.fail_active_capture();
+            self.disable();
             return Err(error);
         }
         if let Err(error) = wait_for_recording(&recording_rx, RECORDING_READY_TIMEOUT) {
-            self.fail_active_capture();
+            self.disable();
             return Err(error);
         }
         Ok(())
@@ -638,7 +619,7 @@ impl Engine for VoxtypeEngine {
             }
         }
         if let Err(error) = self.run_record_command(record_action_argv("stop")) {
-            self.fail_active_capture();
+            self.disable();
             return Err(error);
         }
         Ok(())

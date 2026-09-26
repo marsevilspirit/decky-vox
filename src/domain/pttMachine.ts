@@ -29,7 +29,6 @@ export class PttMachine {
   private bindings: PttBindings;
   private readonly pressedByController = new Map<number, Set<ControllerButton>>();
   private ownerControllerId: number | null = null;
-  private recordingIntent = false;
 
   constructor(bindings: PttBindings) {
     this.bindings = { ...bindings };
@@ -37,7 +36,7 @@ export class PttMachine {
 
   configure(bindings: PttBindings): boolean {
     if (sameBindings(this.bindings, bindings)) return false;
-    const hadRecordingIntent = this.recordingIntent;
+    const hadRecordingIntent = this.ownerControllerId !== null;
     this.bindings = { ...bindings };
     this.reset();
     return hadRecordingIntent;
@@ -46,11 +45,10 @@ export class PttMachine {
   reset(): void {
     this.pressedByController.clear();
     this.ownerControllerId = null;
-    this.recordingIntent = false;
   }
 
   isRecordingIntentActive(): boolean {
-    return this.recordingIntent;
+    return this.ownerControllerId !== null;
   }
 
   handle(event: ControllerButtonEvent, canStart: boolean): PttAction | null {
@@ -69,25 +67,22 @@ export class PttMachine {
 
     if (this.bindings.mode === "toggle") {
       if (!wasActive && isActive && event.pressed) {
-        if (this.recordingIntent) {
+        if (this.ownerControllerId !== null) {
           if (event.controllerId !== this.ownerControllerId) return null;
-          this.recordingIntent = false;
           const owner = this.ownerControllerId;
           this.ownerControllerId = null;
-          return owner === null ? null : { type: "stop", controllerId: owner };
+          return { type: "stop", controllerId: owner };
         }
-        if (!canStart || this.ownerControllerId !== null) return null;
+        if (!canStart) return null;
         this.ownerControllerId = event.controllerId;
-        this.recordingIntent = true;
         return { type: "start", controllerId: event.controllerId };
       }
       return null;
     }
 
-    if (!this.recordingIntent) {
+    if (this.ownerControllerId === null) {
       if (!canStart || wasActive || !isActive || !event.pressed) return null;
       this.ownerControllerId = event.controllerId;
-      this.recordingIntent = true;
       return { type: "start", controllerId: event.controllerId };
     }
 
@@ -98,8 +93,7 @@ export class PttMachine {
     ) {
       const owner = this.ownerControllerId;
       this.ownerControllerId = null;
-      this.recordingIntent = false;
-      return owner === null ? null : { type: "stop", controllerId: owner };
+      return { type: "stop", controllerId: owner };
     }
     return null;
   }
